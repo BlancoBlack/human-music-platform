@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+backend/.venv/
+backend/venv/
+
+# Environment files (keep examples)
+.env
+.env.*
+!.env.example
+!backend/.env.example
+
+# Local databases
+*.db
+backend/*.db
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Backend uploads (generated media; do not commit)
+backend/uploads/
+
+# Frontend
+frontend/.next/
+frontend/node_modules/
