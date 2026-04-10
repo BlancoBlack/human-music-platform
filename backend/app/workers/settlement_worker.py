@@ -117,15 +117,15 @@ def _payout_settlement_stats(db: Session, batch_id: int) -> tuple[int, dict[str,
 
 def _already_settled_artist_ids(db: Session, batch_id: int) -> set[int]:
     """
-    Artist ids considered already settled for idempotent endpoint feedback.
+    Artist ids with nothing left to do at batch orchestration time.
 
-    Rule:
-    - execution_status in {"confirmed", "submitted"}
+    Only ``confirmed`` is terminal. ``submitted`` must still run
+    ``_resume_submitted_settlement`` (wait_for_confirmation), so it is NOT included.
     """
     rows = (
         db.query(PayoutSettlement.artist_id)
         .filter(PayoutSettlement.batch_id == int(batch_id))
-        .filter(PayoutSettlement.execution_status.in_(("confirmed", "submitted")))
+        .filter(PayoutSettlement.execution_status == "confirmed")
         .all()
     )
     return {int(r[0]) for r in rows if r[0] is not None}
@@ -211,7 +211,7 @@ def process_batch_settlement(
 
         if pre_skipped == len(artist_ids):
             logger.info(
-                "Settlement batch=%s skipped: all artists already settled/submitted",
+                "Settlement batch=%s skipped: all artists already confirmed",
                 int(batch_id),
             )
             return {
