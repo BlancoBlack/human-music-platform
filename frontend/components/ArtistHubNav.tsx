@@ -2,7 +2,7 @@
 
 import { API_BASE } from "@/lib/api";
 
-type HubTab = "overview" | "analytics" | "payouts" | "upload";
+type HubTab = "overview" | "analytics" | "payouts" | "catalog" | "upload";
 
 type ArtistHubNavProps = {
   artistId: number;
@@ -17,6 +17,7 @@ export function ArtistHubNav({ artistId, active }: ArtistHubNavProps) {
   const dash = `${API_BASE}/artist-dashboard/${id}`;
   const analytics = `${API_BASE}/artist-analytics/${id}`;
   const payouts = `${API_BASE}/artist-payouts/${id}`;
+  const catalog = `/artist-catalog?artist_id=${id}`;
   const upload = `/artist-upload?artist_id=${id}`;
 
   const item = (tab: HubTab, href: string, label: string) => (
@@ -47,6 +48,10 @@ export function ArtistHubNav({ artistId, active }: ArtistHubNavProps) {
           |
         </span>
         {item("payouts", payouts, "Payouts")}
+        <span className="text-neutral-300 dark:text-neutral-600" aria-hidden>
+          |
+        </span>
+        {item("catalog", catalog, "Catalog")}
         <span className="text-neutral-300 dark:text-neutral-600" aria-hidden>
           |
         </span>

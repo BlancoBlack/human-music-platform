@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArtistHubNav } from "@/components/ArtistHubNav";
 import { UploadWizard } from "@/components/UploadWizard";
-import { API_BASE, fetchSong } from "@/lib/api";
+import { API_BASE, fetchArtist, fetchSong } from "@/lib/api";
 
 const UPLOAD_WIZARD_SONG_STORAGE_KEY = "uploadWizardSongId";
 
@@ -22,6 +22,26 @@ function ArtistUploadInner() {
   const [resumeUploadStatus, setResumeUploadStatus] = useState<string | null>(
     null,
   );
+  const [headerArtistName, setHeaderArtistName] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!artistValid) {
+      setHeaderArtistName(null);
+      return;
+    }
+    setHeaderArtistName(null);
+    let cancelled = false;
+    void fetchArtist(aid)
+      .then((artist) => {
+        if (!cancelled) setHeaderArtistName(artist.name);
+      })
+      .catch(() => {
+        if (!cancelled) setHeaderArtistName(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artistValid, aid]);
 
   useEffect(() => {
     if (!artistValid) {
@@ -157,15 +177,31 @@ function ArtistUploadInner() {
         headerSlot={
           <>
             <ArtistHubNav artistId={aid} active="upload" />
-            <p
+            <div
               className="mt-3 mb-6 text-sm text-neutral-600 dark:text-neutral-400"
               aria-live="polite"
             >
-              Uploading as Artist{" "}
-              <span className="font-mono font-medium tabular-nums text-neutral-800 dark:text-neutral-200">
-                {aid}
-              </span>
-            </p>
+              <p>
+                Uploading as:{" "}
+                {headerArtistName != null ? (
+                  <span className="font-medium text-neutral-800 dark:text-neutral-200">
+                    {headerArtistName}
+                  </span>
+                ) : (
+                  <>
+                    Artist{" "}
+                    <span className="font-mono font-medium tabular-nums text-neutral-800 dark:text-neutral-200">
+                      {aid}
+                    </span>
+                  </>
+                )}
+              </p>
+              {headerArtistName != null && (
+                <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-500">
+                  (ID {aid})
+                </p>
+              )}
+            </div>
           </>
         }
       />

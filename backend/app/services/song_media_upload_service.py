@@ -4,12 +4,15 @@ import hashlib
 import io
 import logging
 import os
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
+from app.models.artist import Artist
 from app.models.song import Song
 from app.models.song_media_asset import (
     SONG_MEDIA_KIND_COVER_ART,
@@ -28,6 +31,54 @@ logger = logging.getLogger(__name__)
 _WAV_MAX_BYTES = 225 * 1024 * 1024
 _COVER_MIN_PX = 1400
 _COVER_MAX_PX = 3000
+
+# Human-readable segment in stored master WAV name only; song id is authoritative.
+_MASTER_FILENAME_SEGMENT_MAX_LEN = 50
+
+
+def _ascii_fold(text: str) -> str:
+    nfd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfd if not unicodedata.combining(c))
+
+
+def _segment_slug_for_master_filename(raw: str | None, *, max_len: int) -> str:
+    """
+    Lowercase slug for debug-friendly filenames: spaces -> hyphen, strip specials.
+    Not used for identity or lookups.
+    """
+    if raw is None:
+        return "unknown"
+    s = _ascii_fold(str(raw).strip())
+    if not s:
+        return "unknown"
+    s = s.lower()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^a-z0-9\-]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    if not s:
+        return "unknown"
+    if len(s) > max_len:
+        s = s[:max_len].rstrip("-")
+    return s or "unknown"
+
+
+def build_master_wav_storage_filename(
+    *,
+    song_id: int,
+    artist_name: str | None,
+    title: str | None,
+) -> str:
+    """
+    Disk name only: ``song_{id}__{artist}__{title}__master.wav``.
+    Retrieval uses DB ``file_path``; this string is not parsed for logic.
+    """
+    artist_part = _segment_slug_for_master_filename(
+        artist_name, max_len=_MASTER_FILENAME_SEGMENT_MAX_LEN
+    )
+    title_part = _segment_slug_for_master_filename(
+        title, max_len=_MASTER_FILENAME_SEGMENT_MAX_LEN
+    )
+    return f"song_{int(song_id)}__{artist_part}__{title_part}__master.wav"
 
 
 class WavFileTooLargeError(ValueError):
@@ -217,7 +268,18 @@ def upload_song_master_audio(
     digest = bytes_sha256_hex(data)
     size = len(data)
 
-    rel = Path("uploads") / "songs" / f"{int(song_id)}_master.wav"
+    artist_row = (
+        db.query(Artist.name)
+        .filter(Artist.id == int(song.artist_id))
+        .first()
+    )
+    artist_name = str(artist_row[0]) if artist_row else None
+    wav_name = build_master_wav_storage_filename(
+        song_id=int(song_id),
+        artist_name=artist_name,
+        title=song.title,
+    )
+    rel = Path("uploads") / "songs" / wav_name
     os.makedirs(rel.parent, exist_ok=True)
     rel.write_bytes(data)
     rel_str = rel.as_posix()

@@ -25,6 +25,7 @@ from app.services.song_media_upload_service import (
     CoverResolutionInvalidError,
     MasterAudioImmutableError,
     WavFileTooLargeError,
+    build_master_wav_storage_filename,
     compute_pipeline_upload_status,
     upload_song_cover_art,
     upload_song_master_audio,
@@ -55,6 +56,34 @@ def _valid_cover_png_bytes() -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", (1400, 1400), (10, 20, 30)).save(buf, format="PNG")
     return buf.getvalue()
+
+
+class MasterWavFilenameTests(unittest.TestCase):
+    def test_example_shape(self) -> None:
+        self.assertEqual(
+            build_master_wav_storage_filename(
+                song_id=12,
+                artist_name="Mina Qiu",
+                title="Tu Collar",
+            ),
+            "song_12__mina-qiu__tu-collar__master.wav",
+        )
+
+    def test_special_chars_sanitized(self) -> None:
+        name = build_master_wav_storage_filename(
+            song_id=1,
+            artist_name="Foo!!! Bar",
+            title="Bar???",
+        )
+        self.assertEqual(name, "song_1__foo-bar__bar__master.wav")
+
+    def test_truncation_artist_segment(self) -> None:
+        name = build_master_wav_storage_filename(
+            song_id=1,
+            artist_name="x" * 60,
+            title="ab",
+        )
+        self.assertEqual(name, "song_1__" + "x" * 50 + "__ab__master.wav")
 
 
 class ComputeUploadStatusTests(unittest.TestCase):
@@ -122,7 +151,7 @@ class SongMediaUploadIntegrationTests(unittest.TestCase):
             song = db.query(Song).filter(Song.id == 1).first()
             assert song is not None
             self.assertEqual(song.upload_status, "audio_uploaded")
-            self.assertEqual(song.file_path, "uploads/songs/1_master.wav")
+            self.assertEqual(song.file_path, "uploads/songs/song_1__a__t__master.wav")
             ma = (
                 db.query(SongMediaAsset)
                 .filter_by(song_id=1, kind=SONG_MEDIA_KIND_MASTER_AUDIO)

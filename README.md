@@ -249,3 +249,7 @@ Pera, Lora, or AlgoExplorer-style tools to verify transactions (see `NETWORK` / 
 ## Economics docs
 
 - Policy versioning and snapshot economics guide: `backend/app/economics/README.md`
+
+## Tech debt
+
+- Intentional deferrals and backlog (single source of truth): [`docs/tech-debt/README.md`](docs/tech-debt/README.md)

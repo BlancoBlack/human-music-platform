@@ -18,8 +18,19 @@ export type SongDetail = {
   cover_url: string | null;
 };
 
+/** Thrown when `GET /songs/{id}` returns 404 (use for user-facing copy, not raw JSON). */
+export class ApiNotFoundError extends Error {
+  constructor(message = "Not found") {
+    super(message);
+    this.name = "ApiNotFoundError";
+  }
+}
+
 export async function fetchSong(songId: number): Promise<SongDetail> {
   const res = await fetch(`${API_BASE}/songs/${songId}`);
+  if (res.status === 404) {
+    throw new ApiNotFoundError("Song not found");
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Failed to load song ${songId}`);
@@ -37,6 +48,54 @@ export async function fetchArtist(artistId: number): Promise<ArtistPublic> {
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Failed to load artist ${artistId}`);
+  }
+  return res.json();
+}
+
+export type ArtistsSearchResponse = {
+  artists: ArtistPublic[];
+};
+
+export type ArtistCatalogSong = {
+  id: number;
+  title: string;
+  artist_id: number;
+  upload_status: string;
+  duration_seconds: number | null;
+  cover_url: string | null;
+  audio_url: string | null;
+  has_master_audio: boolean;
+  playable: boolean;
+};
+
+export type ArtistCatalogResponse = {
+  songs: ArtistCatalogSong[];
+};
+
+export async function fetchArtistSongs(
+  artistId: number,
+  limit = 50,
+): Promise<ArtistCatalogResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const res = await fetch(
+    `${API_BASE}/artists/${artistId}/songs?${params}`,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to load songs for artist ${artistId}`);
+  }
+  return res.json();
+}
+
+export async function searchArtists(
+  q: string,
+  limit = 10,
+): Promise<ArtistsSearchResponse> {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  const res = await fetch(`${API_BASE}/artists/search?${params}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Artist search failed");
   }
   return res.json();
 }

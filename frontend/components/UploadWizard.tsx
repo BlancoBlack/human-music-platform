@@ -8,6 +8,8 @@ import {
   fetchArtist,
   fetchSong,
   parseErrorPayload,
+  searchArtists,
+  type ArtistPublic,
   type SongDetail,
 } from "@/lib/api";
 
@@ -56,6 +58,8 @@ function formatDuration(seconds: number | null | undefined): string {
 }
 
 type CreditRow = { name: string; role: (typeof CREDIT_ROLES)[number] };
+
+type FeaturedPick = { id: number; name: string };
 
 function MasterAudioLockedCard({ song }: { song: SongDetail }) {
   if (!song.has_master_audio) return null;
@@ -119,8 +123,14 @@ export function UploadWizard({
 
   const [title, setTitle] = useState("");
   const [artistId, setArtistId] = useState("");
-  const [featuredArtistIds, setFeaturedArtistIds] = useState<number[]>([]);
-  const [featuredIdDraft, setFeaturedIdDraft] = useState("");
+  const [featuredPicks, setFeaturedPicks] = useState<FeaturedPick[]>([]);
+  const [featuredQuery, setFeaturedQuery] = useState("");
+  const [debouncedFeaturedQuery, setDebouncedFeaturedQuery] = useState("");
+  const [featuredSearchResults, setFeaturedSearchResults] = useState<
+    ArtistPublic[]
+  >([]);
+  const [featuredSearchLoading, setFeaturedSearchLoading] = useState(false);
+  const [featuredSearchOpen, setFeaturedSearchOpen] = useState(false);
   const [creditRows, setCreditRows] = useState<CreditRow[]>([]);
   const [lockedArtistName, setLockedArtistName] = useState<string | null>(null);
 
@@ -148,6 +158,42 @@ export function UploadWizard({
       cancelled = true;
     };
   }, [fixedArtistId]);
+
+  const primaryArtistIdNum = useMemo(() => {
+    if (fixedArtistId != null && fixedArtistId > 0) return fixedArtistId;
+    const aid = parseInt(artistId, 10);
+    return Number.isFinite(aid) && aid > 0 ? aid : null;
+  }, [fixedArtistId, artistId]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedFeaturedQuery(featuredQuery), 300);
+    return () => clearTimeout(t);
+  }, [featuredQuery]);
+
+  useEffect(() => {
+    const q = debouncedFeaturedQuery.trim();
+    if (q.length < 2) {
+      setFeaturedSearchResults([]);
+      setFeaturedSearchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setFeaturedSearchResults([]);
+    setFeaturedSearchLoading(true);
+    void searchArtists(q, 10)
+      .then((data) => {
+        if (!cancelled) setFeaturedSearchResults(data.artists ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setFeaturedSearchResults([]);
+      })
+      .finally(() => {
+        if (!cancelled) setFeaturedSearchLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedFeaturedQuery]);
 
   const refreshSong = useCallback(async (id: number) => {
     setLoadError(null);
@@ -220,8 +266,12 @@ export function UploadWizard({
     } else {
       setArtistId(String(fixedArtistId));
     }
-    setFeaturedArtistIds([]);
-    setFeaturedIdDraft("");
+    setFeaturedPicks([]);
+    setFeaturedQuery("");
+    setDebouncedFeaturedQuery("");
+    setFeaturedSearchResults([]);
+    setFeaturedSearchLoading(false);
+    setFeaturedSearchOpen(false);
     setCreditRows([]);
     setMetadataError(null);
     setAudioError(null);
@@ -237,15 +287,32 @@ export function UploadWizard({
     return Number.isFinite(aid) ? aid : null;
   };
 
-  const addFeaturedFromDraft = () => {
-    const n = parseInt(featuredIdDraft.trim(), 10);
-    if (!Number.isFinite(n) || n <= 0) return;
-    setFeaturedArtistIds((prev) =>
-      prev.includes(n) ? prev : [...prev, n],
+  const addFeaturedFromSearch = (artist: ArtistPublic) => {
+    if (primaryArtistIdNum != null && artist.id === primaryArtistIdNum) {
+      return;
+    }
+    setFeaturedPicks((prev) =>
+      prev.some((p) => p.id === artist.id)
+        ? prev
+        : [...prev, { id: artist.id, name: artist.name }],
     );
-    setFeaturedIdDraft("");
+    setFeaturedQuery("");
+    setDebouncedFeaturedQuery("");
+    setFeaturedSearchResults([]);
+    setFeaturedSearchOpen(false);
     setMetadataError(null);
   };
+
+  const visibleFeaturedSearchResults = useMemo(() => {
+    return featuredSearchResults.filter(
+      (a) =>
+        (primaryArtistIdNum == null || a.id !== primaryArtistIdNum) &&
+        !featuredPicks.some((p) => p.id === a.id),
+    );
+  }, [featuredSearchResults, primaryArtistIdNum, featuredPicks]);
+
+  const showFeaturedSearchPanel =
+    featuredSearchOpen && debouncedFeaturedQuery.trim().length >= 2;
 
   const submitMetadata = async () => {
     setMetadataError(null);
@@ -260,7 +327,7 @@ export function UploadWizard({
     }
     setBusy(true);
     try {
-      const featured_artist_ids = featuredArtistIds;
+      const featured_artist_ids = featuredPicks.map((p) => p.id);
       const credits = creditRows.filter((r) => r.name.trim());
       const res = await fetch(`${API_BASE}/songs`, {
         method: "POST",
@@ -516,43 +583,83 @@ export function UploadWizard({
             <span className="block text-sm text-neutral-600 dark:text-neutral-400">
               Add featured artists
             </span>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative">
               <input
-                type="number"
-                min={1}
-                className="w-full min-w-0 flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-2 font-mono dark:border-neutral-700 dark:bg-neutral-950"
-                value={featuredIdDraft}
-                onChange={(e) => setFeaturedIdDraft(e.target.value)}
-                placeholder="Enter artist ID"
-                onKeyDown={(e) => {
-                  if (e.key !== "Enter") return;
-                  e.preventDefault();
-                  addFeaturedFromDraft();
+                type="search"
+                autoComplete="off"
+                className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-950"
+                value={featuredQuery}
+                onChange={(e) => {
+                  setFeaturedQuery(e.target.value);
+                  setMetadataError(null);
+                }}
+                placeholder="Search artist…"
+                onFocus={() => setFeaturedSearchOpen(true)}
+                onBlur={() => {
+                  window.setTimeout(() => setFeaturedSearchOpen(false), 200);
                 }}
               />
-              <button
-                type="button"
-                className="shrink-0 rounded-lg border border-neutral-300 bg-white px-4 py-2 text-sm font-medium text-neutral-800 hover:bg-neutral-50 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100 dark:hover:bg-neutral-900"
-                onClick={addFeaturedFromDraft}
-              >
-                Add
-              </button>
+              {showFeaturedSearchPanel && (
+                <div
+                  className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-md dark:border-neutral-700 dark:bg-neutral-950"
+                >
+                  {featuredSearchLoading && (
+                    <div className="flex items-center gap-2 px-3 py-2 text-sm text-neutral-500 dark:text-neutral-400">
+                      <span
+                        className="inline-block size-3 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-600 dark:border-neutral-600 dark:border-t-neutral-300"
+                        aria-hidden
+                      />
+                      Searching…
+                    </div>
+                  )}
+                  {!featuredSearchLoading &&
+                    visibleFeaturedSearchResults.length === 0 && (
+                      <div className="px-3 py-2 text-sm text-neutral-500 dark:text-neutral-400">
+                        No artists found
+                      </div>
+                    )}
+                  {!featuredSearchLoading &&
+                    visibleFeaturedSearchResults.map((a) => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        className="flex w-full px-3 py-2 text-left text-sm text-neutral-800 hover:bg-neutral-100 dark:text-neutral-100 dark:hover:bg-neutral-800"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => addFeaturedFromSearch(a)}
+                      >
+                        {a.name}{" "}
+                        <span className="text-neutral-500 dark:text-neutral-400">
+                          (ID {a.id})
+                        </span>
+                      </button>
+                    ))}
+                </div>
+              )}
             </div>
-            {featuredArtistIds.length > 0 && (
+            {featuredQuery.trim().length > 0 &&
+              featuredQuery.trim().length < 2 && (
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  Type at least 2 characters to search.
+                </p>
+              )}
+            {featuredPicks.length > 0 && (
               <ul className="flex flex-wrap gap-2" aria-label="Featured artists">
-                {featuredArtistIds.map((fid) => (
-                  <li key={fid}>
+                {featuredPicks.map((pick) => (
+                  <li key={pick.id}>
                     <span className="inline-flex items-center gap-1 rounded-full border border-neutral-300 bg-white py-1 pl-3 pr-1 text-sm text-neutral-800 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100">
-                      <span className="font-mono tabular-nums">
-                        Artist ID: {fid}
+                      <span>
+                        {pick.name}{" "}
+                        <span className="text-neutral-500 dark:text-neutral-400">
+                          (ID {pick.id})
+                        </span>
                       </span>
                       <button
                         type="button"
                         className="rounded-full px-2 py-0.5 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-                        aria-label={`Remove featured artist ${fid}`}
+                        aria-label={`Remove featured artist ${pick.name}`}
                         onClick={() =>
-                          setFeaturedArtistIds((prev) =>
-                            prev.filter((x) => x !== fid),
+                          setFeaturedPicks((prev) =>
+                            prev.filter((x) => x.id !== pick.id),
                           )
                         }
                       >
@@ -779,7 +886,7 @@ export function UploadWizard({
             </div>
           )}
           <Link
-            href={`/?song=${song.id}`}
+            href={`/song/${song.id}`}
             className="inline-flex w-full items-center justify-center rounded-lg bg-neutral-900 py-3 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
           >
             View song

@@ -23,7 +23,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import desc, func
 
 # 🔥 nuevo import (service)
 from app.core.database import SessionLocal, get_db
@@ -48,6 +48,10 @@ from app.services.payout_ledger_ui_service import (
 )
 from app.services.artist_distribution_service import expand_song_distribution_to_artists
 from app.services.pool_payout_service import calculate_global_distribution
+from app.services.listening_checkpoint_service import (
+    process_start_listening_session,
+    process_stream_checkpoint,
+)
 from app.services.stream_service import StreamService
 from app.services.comparison_service import compare_models
 from app.services.artist_dashboard_service import get_artist_dashboard
@@ -95,6 +99,219 @@ def _artist_upload_href(artist_id: int) -> str:
     return f"{_next_app_base_url()}/artist-upload?artist_id={artist_id}"
 
 
+def _artist_catalog_href(artist_id: int) -> str:
+    return f"{_next_app_base_url()}/artist-catalog?artist_id={artist_id}"
+
+
+# Shared dark UI for artist HTML pages (dashboard / analytics / payouts).
+_ARTIST_HUB_CSS = """
+*, *::before, *::after { box-sizing: border-box; }
+body.artist-hub {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0a0a0a;
+  color: #fafafa;
+  line-height: 1.5;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+.artist-hub-inner {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 4rem;
+}
+.artist-hub h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.5rem 0;
+}
+.artist-hub-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  padding-bottom: 0.75rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid #27272a;
+}
+.artist-hub-nav a {
+  color: #a1a1aa;
+  text-decoration: none;
+  font-size: 0.875rem;
+  transition: color 0.15s ease;
+}
+.artist-hub-nav a:hover { color: #fafafa; }
+.artist-hub-nav a.is-active {
+  color: #fafafa;
+  font-weight: 700;
+}
+.artist-hub-nav .sep {
+  color: #3f3f46;
+  user-select: none;
+  font-weight: 300;
+}
+.ah-card {
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.ah-card h2 {
+  margin-top: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #fafafa;
+}
+.ah-card h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fafafa;
+}
+.ah-card p, .artist-hub section p { color: #d4d4d8; }
+.ah-card .ah-lead, .artist-hub .ah-lead {
+  color: #a1a1aa;
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}
+.ah-card--earnings { border-color: #3f3f46; }
+.ah-card--accent {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: linear-gradient(180deg, #14532d12 0%, #18181b 100%);
+}
+.ah-card--compare { border-color: rgba(59, 130, 246, 0.35); }
+.ah-card--payout { border-color: rgba(245, 158, 11, 0.35); }
+.ah-card--hero {
+  border-color: rgba(251, 146, 60, 0.35);
+  background: linear-gradient(180deg, #7c2d1218 0%, #18181b 100%);
+}
+.ah-muted { color: #a1a1aa !important; }
+.ah-code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  background: #27272a;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  color: #e4e4e7;
+}
+.artist-hub code { font-family: ui-monospace, monospace; font-size: 0.85em; background: #27272a; padding: 0.125rem 0.375rem; border-radius: 0.25rem; color: #e4e4e7; }
+.artist-hub a.ah-inline-link { color: #93c5fd; text-decoration: none; }
+.artist-hub a.ah-inline-link:hover { text-decoration: underline; }
+.ah-btn {
+  margin-top: 0.75rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #fafafa;
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.ah-btn:hover {
+  background: #3f3f46;
+  border-color: #52525b;
+}
+.ah-toggle-panel {
+  display: none;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #27272a;
+}
+table.ah-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+}
+table.ah-table th {
+  text-align: left;
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid #3f3f46;
+  color: #a1a1aa;
+  font-weight: 600;
+}
+table.ah-table td {
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid #27272a;
+  color: #e4e4e7;
+}
+table.ah-table tbody tr { transition: background 0.12s ease; }
+table.ah-table tbody tr:hover { background: #27272a; }
+table.ah-table-fixed { table-layout: fixed; }
+.artist-hub label { color: #a1a1aa; font-size: 0.875rem; }
+.artist-hub select, .artist-hub input[type="text"], .artist-hub textarea {
+  background: #09090b;
+  color: #fafafa;
+  border: 1px solid #3f3f46;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.875rem;
+}
+.artist-hub select:focus, .artist-hub input:focus, .artist-hub textarea:focus {
+  outline: none;
+  border-color: #71717a;
+}
+.ah-form-actions { margin-bottom: 0; margin-top: 0.5rem; }
+.ah-fan-item {
+  margin-bottom: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #27272a;
+  border-radius: 0.5rem;
+  background: #141416;
+  color: #d4d4d8;
+}
+.ah-payout-row td:last-child { color: #a1a1aa; font-size: 0.8rem; }
+#heroInsight { display: none; }
+.ah-hero-title { margin-top: 0; }
+.ah-hero-msg { font-size: 1.1rem; margin: 0.5rem 0; line-height: 1.5; color: #fafafa; }
+.ah-hero-sub { font-size: 0.9rem; color: #a1a1aa; margin-top: 0.75rem; margin-bottom: 0; }
+.ah-warn { color: #fbbf24; }
+.artist-hub b { color: #fafafa; font-weight: 600; }
+.artist-hub ol { color: #d4d4d8; }
+.artist-hub ol li { margin-bottom: 0.5rem; }
+.ah-chart-canvas { max-width: 100%; height: auto !important; }
+.ah-range-row { display: flex; gap: 0.65rem; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; }
+"""
+
+
+def _artist_hub_html_head(page_title: str, *, extra_head: str = "") -> str:
+    esc = _html_escape(page_title)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>{esc}</title>
+<style>
+{_ARTIST_HUB_CSS}
+</style>
+{extra_head}
+</head>
+"""
+
+
+def _artist_hub_nav(artist_id: int, active: str) -> str:
+    """active: overview | analytics | payouts"""
+    items: list[tuple[str, str, str]] = [
+        ("overview", f"/artist-dashboard/{artist_id}", "Overview"),
+        ("analytics", f"/artist-analytics/{artist_id}", "Analytics"),
+        ("payouts", f"/artist-payouts/{artist_id}", "Payouts"),
+        ("upload", _artist_upload_href(artist_id), "Upload"),
+        ("catalog", _artist_catalog_href(artist_id), "Catalog"),
+    ]
+    links: list[str] = []
+    for key, href, label in items:
+        if key == active:
+            links.append(f'<a href="{href}" class="is-active">{label}</a>')
+        else:
+            links.append(f'<a href="{href}">{label}</a>')
+    inner = '<span class="sep" aria-hidden="true">|</span>'.join(links)
+    return f'<nav class="artist-hub-nav" aria-label="Artist hub">{inner}</nav>'
+
+
 MAX_PAYOUT_TEXT_LEN = 255
 ALLOWED_PAYOUT_METHODS = frozenset({"none", "crypto", "bank"})
 
@@ -108,6 +325,16 @@ _STREAM_RL_USER_MAX = 30
 _STREAM_RL_BURST_WINDOW_S = 2.0
 _STREAM_RL_BURST_MAX = 5
 _TRUST_X_FORWARDED_FOR = os.getenv("TRUST_X_FORWARDED_FOR", "").strip().lower() == "true"
+
+# POST /stream/checkpoint: separate limits (do not share /stream counters).
+_checkpoint_rate_limit_store: dict[str, deque[float]] = {}
+_CHECKPOINT_RL_USER_WINDOW_S = 60.0
+_CHECKPOINT_RL_USER_MAX = 120
+
+# POST /stream/start-session: limit idle session creation abuse.
+_start_session_rate_limit_store: dict[str, deque[float]] = {}
+_START_SESSION_RL_USER_WINDOW_S = 60.0
+_START_SESSION_RL_USER_MAX = 30
 
 
 def get_client_ip(request: Request) -> str:
@@ -134,15 +361,21 @@ def _stream_rate_limit_retry_after_s(dq: deque[float], now: float, window_s: flo
     return max(1.0, dq[0] + window_s - now)
 
 
-def _stream_rate_limit_get_pruned(key: str, now: float, window_s: float) -> deque[float]:
-    dq = _stream_rate_limit_store.get(key)
+def _rate_limit_get_pruned(
+    store: dict[str, deque[float]], key: str, now: float, window_s: float
+) -> deque[float]:
+    dq = store.get(key)
     if dq is None:
         return deque()
     _stream_rate_limit_prune(dq, now, window_s)
     if not dq:
-        del _stream_rate_limit_store[key]
+        del store[key]
         return deque()
     return dq
+
+
+def _stream_rate_limit_get_pruned(key: str, now: float, window_s: float) -> deque[float]:
+    return _rate_limit_get_pruned(_stream_rate_limit_store, key, now, window_s)
 
 
 def _enforce_stream_rate_limit(request: Request, user_id: int) -> None:
@@ -204,6 +437,66 @@ def _enforce_stream_rate_limit(request: Request, user_id: int) -> None:
         burst_dq.append(now)
 
 
+def _enforce_checkpoint_rate_limit(request: Request, user_id: int) -> None:
+    """Sliding window: max checkpoints per user per minute (separate from /stream)."""
+    path = request.url.path
+    if path.startswith("/dev/") or path.startswith("/admin/"):
+        return
+
+    user_key = f"checkpoint:user:{user_id}"
+    with rate_limit_lock:
+        now = time.time()
+        dq = _rate_limit_get_pruned(
+            _checkpoint_rate_limit_store, user_key, now, _CHECKPOINT_RL_USER_WINDOW_S
+        )
+        if len(dq) >= _CHECKPOINT_RL_USER_MAX:
+            retry_after_s = _stream_rate_limit_retry_after_s(
+                dq, now, _CHECKPOINT_RL_USER_WINDOW_S
+            )
+            logger.warning(
+                "checkpoint_rate_limit_exceeded",
+                extra={"user_id": user_id, "reason": "checkpoint_user_rate_limited"},
+            )
+            ra_int = max(1, int(math.ceil(retry_after_s)))
+            raise HTTPException(
+                status_code=429,
+                detail={"status": "rate_limited", "reason": "checkpoint_user_rate_limited"},
+                headers={"Retry-After": str(ra_int)},
+            )
+        _checkpoint_rate_limit_store[user_key] = dq
+        dq.append(now)
+
+
+def _enforce_start_session_rate_limit(request: Request, user_id: int) -> None:
+    """Sliding window: max new listening sessions per user per minute."""
+    path = request.url.path
+    if path.startswith("/dev/") or path.startswith("/admin/"):
+        return
+
+    user_key = f"start_session:user:{user_id}"
+    with rate_limit_lock:
+        now = time.time()
+        dq = _rate_limit_get_pruned(
+            _start_session_rate_limit_store, user_key, now, _START_SESSION_RL_USER_WINDOW_S
+        )
+        if len(dq) >= _START_SESSION_RL_USER_MAX:
+            retry_after_s = _stream_rate_limit_retry_after_s(
+                dq, now, _START_SESSION_RL_USER_WINDOW_S
+            )
+            logger.warning(
+                "start_session_rate_limit_exceeded",
+                extra={"user_id": user_id, "reason": "start_session_user_rate_limited"},
+            )
+            ra_int = max(1, int(math.ceil(retry_after_s)))
+            raise HTTPException(
+                status_code=429,
+                detail={"status": "rate_limited", "reason": "start_session_user_rate_limited"},
+                headers={"Retry-After": str(ra_int)},
+            )
+        _start_session_rate_limit_store[user_key] = dq
+        dq.append(now)
+
+
 def require_dev_mode() -> None:
     env = (os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
     allowed_envs = {"dev", "development", "local", "test"}
@@ -251,14 +544,14 @@ def _artist_payout_method_banner(artist: Artist) -> str:
 
     if method not in ALLOWED_PAYOUT_METHODS:
         return (
-            '<p style="margin:0; color:#856404;">'
+            '<p class="ah-warn" style="margin:0;">'
             "⚠️ Payout method incomplete"
             "</p>"
         )
 
     if method == "none":
         return (
-            '<p style="margin:0; color:#856404;">'
+            '<p class="ah-warn" style="margin:0;">'
             "⚠️ No payout method configured"
             "</p>"
         )
@@ -266,7 +559,7 @@ def _artist_payout_method_banner(artist: Artist) -> str:
     if method == "crypto":
         if not wallet:
             return (
-                '<p style="margin:0; color:#856404;">'
+                '<p class="ah-warn" style="margin:0;">'
                 "⚠️ Payout method incomplete"
                 "</p>"
             )
@@ -278,7 +571,7 @@ def _artist_payout_method_banner(artist: Artist) -> str:
     if method == "bank":
         if not bank:
             return (
-                '<p style="margin:0; color:#856404;">'
+                '<p class="ah-warn" style="margin:0;">'
                 "⚠️ Payout method incomplete"
                 "</p>"
             )
@@ -288,7 +581,7 @@ def _artist_payout_method_banner(artist: Artist) -> str:
         )
 
     return (
-        '<p style="margin:0; color:#856404;">'
+        '<p class="ah-warn" style="margin:0;">'
         "⚠️ Payout method incomplete"
         "</p>"
     )
@@ -335,6 +628,10 @@ class CreateSongBody(BaseModel):
     artist_id: int = Field(..., description="Primary (release) artist")
     featured_artist_ids: list[int] = Field(default_factory=list, max_length=20)
     credits: list[CreateSongCreditBody] = Field(default_factory=list, max_length=20)
+
+
+class StartSessionRequest(BaseModel):
+    song_id: int
 
 
 @router.post("/songs")
@@ -426,11 +723,120 @@ def get_song(song_id: int, db=Depends(get_db)):
     }
 
 
+_MAX_ARTIST_SEARCH_Q_LEN = 128
+
+
+def _escape_like_pattern(s: str) -> str:
+    """Escape ``%``, ``_``, and ``\\`` for SQL LIKE with ESCAPE '\\'."""
+    return (
+        s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+
+
+@router.get("/artists/search")
+def search_artists(
+    q: str = Query(...),
+    limit: int = Query(10, ge=1, le=25),
+    db=Depends(get_db),
+):
+    """Case-insensitive name substring search; excludes system artists."""
+    trimmed = (q or "").strip()
+    if not trimmed:
+        return {"artists": []}
+    if len(trimmed) > _MAX_ARTIST_SEARCH_Q_LEN:
+        trimmed = trimmed[:_MAX_ARTIST_SEARCH_Q_LEN]
+    pattern = f"%{_escape_like_pattern(trimmed.lower())}%"
+    rows = (
+        db.query(Artist)
+        .filter(
+            Artist.is_system.is_(False),
+            func.lower(Artist.name).like(pattern, escape="\\"),
+        )
+        .order_by(Artist.name.asc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "artists": [{"id": int(a.id), "name": a.name} for a in rows],
+    }
+
+
 @router.get("/artists/{artist_id}")
 def get_artist(artist_id: int, db=Depends(get_db)):
     """Public artist record for clients (e.g. upload wizard)."""
     artist = _get_public_artist_or_404(db, artist_id)
     return {"id": artist.id, "name": artist.name}
+
+
+def _public_media_url_from_stored_path(file_path: str | None) -> str | None:
+    """Same URL shape as ``cover_url`` / static ``/uploads`` mount in ``GET /songs/{id}``."""
+    if file_path is None or not str(file_path).strip():
+        return None
+    p = str(file_path).replace("\\", "/").lstrip("/")
+    return f"/{p}"
+
+
+@router.get("/artists/{artist_id}/songs")
+def list_artist_songs(
+    artist_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    db=Depends(get_db),
+):
+    """Catalog list for an artist: metadata and public media paths for future playback."""
+    _get_public_artist_or_404(db, artist_id)
+    songs = (
+        db.query(Song)
+        .filter(Song.artist_id == int(artist_id))
+        .order_by(desc(Song.created_at))
+        .limit(int(limit))
+        .all()
+    )
+    if not songs:
+        return {"songs": []}
+
+    song_ids = [int(s.id) for s in songs]
+    assets = (
+        db.query(SongMediaAsset)
+        .filter(SongMediaAsset.song_id.in_(song_ids))
+        .all()
+    )
+    master_by_sid: dict[int, SongMediaAsset] = {}
+    cover_by_sid: dict[int, SongMediaAsset] = {}
+    for asset in assets:
+        sid = int(asset.song_id)
+        if asset.kind == SONG_MEDIA_KIND_MASTER_AUDIO:
+            master_by_sid[sid] = asset
+        elif asset.kind == SONG_MEDIA_KIND_COVER_ART:
+            cover_by_sid[sid] = asset
+
+    payload = []
+    for song in songs:
+        sid = int(song.id)
+        master = master_by_sid.get(sid)
+        cover = cover_by_sid.get(sid)
+        has_master_audio = master is not None
+        cover_url = _public_media_url_from_stored_path(
+            cover.file_path if cover else None,
+        )
+        audio_url = _public_media_url_from_stored_path(
+            master.file_path if master else None,
+        )
+        upload_status = str(song.upload_status or "")
+        playable = has_master_audio and upload_status == "ready"
+        payload.append(
+            {
+                "id": sid,
+                "title": song.title,
+                "artist_id": int(song.artist_id),
+                "upload_status": upload_status,
+                "duration_seconds": song.duration_seconds,
+                "cover_url": cover_url,
+                "audio_url": audio_url,
+                "has_master_audio": has_master_audio,
+                "playable": playable,
+            }
+        )
+    return {"songs": payload}
 
 
 def _http_from_upload_value_error(exc: ValueError) -> HTTPException:
@@ -595,6 +1001,40 @@ def stream_event(
         listening_session_id=listening_session_id,
         idempotency_key=idempotency_key,
         correlation_id=correlation_id,
+    )
+
+
+@router.post("/stream/start-session")
+def stream_start_session(
+    request: Request,
+    payload: StartSessionRequest,
+    user_id: int = Depends(get_current_user_id),
+    db=Depends(get_db),
+):
+    _enforce_start_session_rate_limit(request, user_id)
+    return process_start_listening_session(
+        db, user_id=user_id, song_id=payload.song_id
+    )
+
+
+@router.post("/stream/checkpoint")
+def stream_checkpoint(
+    request: Request,
+    user_id: int = Depends(get_current_user_id),
+    session_id: int = Body(...),
+    song_id: int = Body(...),
+    sequence: int = Body(...),
+    position_seconds: int = Body(...),
+    db=Depends(get_db),
+):
+    _enforce_checkpoint_rate_limit(request, user_id)
+    return process_stream_checkpoint(
+        db,
+        user_id=user_id,
+        session_id=session_id,
+        song_id=song_id,
+        sequence=sequence,
+        position_seconds=position_seconds,
     )
 
 
@@ -997,7 +1437,7 @@ def artist_dashboard(artist_id: int):
         <div style="margin-bottom:8px;">{payout_date} — {payout_amount} €</div>
         """
     if not last_payouts_html:
-        last_payouts_html = "<p style='color:#666; margin:0;'>No paid payouts yet.</p>"
+        last_payouts_html = '<p class="ah-muted" style="margin:0;">No paid payouts yet.</p>'
 
     pending_html = ""
     pending_value = float(data.get("pending") or 0)
@@ -1029,38 +1469,30 @@ def artist_dashboard(artist_id: int):
     toggle_html = ""
     if show_toggle:
         toggle_html = f"""
-        <button onclick="toggleDetails()" style="margin-top:12px;">
+        <button type="button" class="ah-btn" onclick="toggleDetails()">
             See how this compares to traditional streaming platforms
         </button>
-        <div id="details" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid #ccc;">
+        <div id="details" class="ah-toggle-panel" style="display:none;">
             <p><b>Global model estimate:</b> {data['spotify_total']} €</p>
             <p><b>Difference:</b> {diff_sign}{round(diff_value, 2)} € vs global model</p>
-            <p style="margin-top:12px; color:#555;">
+            <p class="ah-lead" style="margin-top:12px;">
                 Comparison based on payout earnings vs global pool model (ex: Spotify, Apple Music, Amazon, YouTube, etc)
             </p>
         </div>
         """
 
     html = f"""
-    <html>
-    <body style="font-family: Arial; padding: 40px; max-width: 900px;">
+    {_artist_hub_html_head(f"Artist {artist_id} Dashboard")}
+    <body class="artist-hub">
+    <div class="artist-hub-inner">
         <h1>Artist {artist_id} Dashboard</h1>
-        <div style="margin-top:16px; margin-bottom:24px;">
-            <a href="/artist-dashboard/{artist_id}" style="font-weight:700;">Overview</a> |
-            <a href="/artist-analytics/{artist_id}">Analytics</a> |
-            <a href="/artist-payouts/{artist_id}">Payouts</a> |
-            <a href="{_artist_upload_href(artist_id)}">Upload</a> |
-            <a href="/artist-profile/{artist_id}">Profile</a>
-        </div>
-        <p style="margin-top:8px; margin-bottom:0; font-size:0.95rem;">
-            <a href="{_artist_upload_href(artist_id)}">Upload new song</a>
-        </p>
+        {_artist_hub_nav(artist_id, "overview")}
 
-        <div id="heroInsight" style="display:none; margin-bottom:24px; padding:20px; border:1px solid #fd7e1433; border-radius:12px; background:#fff8f3;"></div>
+        <div id="heroInsight" class="ah-card ah-card--hero"></div>
 
-        <section style="margin-bottom:32px; padding:20px; border:1px solid #6c757d44; border-radius:12px;">
-            <h2 style="margin-top:0;">💸 Earnings</h2>
-            <p style="color:#444; margin-bottom:16px;">
+        <section class="ah-card ah-card--earnings">
+            <h2>💸 Earnings</h2>
+            <p class="ah-lead">
                 Ledger from <code>payout_lines</code>. <b>Paid</b> = on-chain confirmed;
                 <b>Accrued</b> = finalized in books, settlement not confirmed yet.
             </p>
@@ -1070,20 +1502,20 @@ def artist_dashboard(artist_id: int):
             {failed_html}
             <h3 style="margin-top:16px; margin-bottom:10px;">Last on-chain payouts</h3>
             {last_payouts_html}
-            <p style="margin-top:10px;"><a href="/artist-payouts/{artist_id}">View all payouts →</a></p>
+            <p style="margin-top:10px;"><a class="ah-inline-link" href="/artist-payouts/{artist_id}">View all payouts →</a></p>
             <p style="margin-top:16px;"><b>Next payout:</b> {next_payout_date.isoformat()}</p>
             {pending_html}
         </section>
 
-        <section style="margin-bottom:32px; padding:20px; border:1px solid #19875444; border-radius:12px; background:#f6fff8;">
-            <h2 style="margin-top:0;">📊 Global Model Comparison</h2>
+        <section class="ah-card ah-card--accent">
+            <h2>📊 Global Model Comparison</h2>
             {negative_diff_message}
             {""
             if diff_value < 0
             else f'''
             <p><b>Global model estimate:</b> {data['spotify_total']} €</p>
             <p><b>You earned {diff_sign}{round(diff_value, 2)} €</b> more than on other platforms!</p>
-            <p style="margin-top:12px; color:#444;">
+            <p class="ah-lead" style="margin-top:12px;">
                 Comparison based on payout earnings vs global pool model (ex: Spotify, Apple Music, Amazon, YouTube, etc)
             </p>
             '''
@@ -1153,16 +1585,17 @@ def artist_dashboard(artist_id: int):
                 var sub = heroInsightSubtext(story);
                 el.style.display = "block";
                 el.innerHTML =
-                    '<h2 style="margin-top:0;">🔥 Insight</h2>' +
-                    '<p style="font-size:1.1rem; margin:8px 0; line-height:1.5;">' + msg + "</p>" +
+                    '<h2 class="ah-hero-title">🔥 Insight</h2>' +
+                    '<p class="ah-hero-msg">' + msg + "</p>" +
                     (sub
-                        ? '<p style="font-size:0.9rem; color:#555; margin-top:12px; margin-bottom:0;">' + sub + "</p>"
+                        ? '<p class="ah-hero-sub">' + sub + "</p>"
                         : "");
             }} catch (e) {{
                 /* keep hidden */
             }}
         }})();
         </script>
+    </div>
     </body></html>
     """
 
@@ -1636,9 +2069,7 @@ def artist_payouts(artist_id: int):
             last_payout_date = first.period_end_at.date().isoformat()
 
     if payout_count == 0:
-        history_html = (
-            "<p style='color:#666; margin:0;'>No payouts yet</p>"
-        )
+        history_html = '<p class="ah-muted" style="margin:0;">No payouts yet</p>'
     else:
         rows_html = ""
         for row in batch_rows:
@@ -1653,20 +2084,20 @@ def artist_payouts(artist_id: int):
             uid = f"{n_u} users" if n_u else "—"
             rows_html += f"""
             <tr>
-                <td style="padding:10px; border-bottom:1px solid #eee;">{row_date}</td>
-                <td style="padding:10px; border-bottom:1px solid #eee;">{amt} €</td>
-                <td style="padding:10px; border-bottom:1px solid #eee;">{st}</td>
-                <td style="padding:10px; border-bottom:1px solid #eee; color:#666; font-size:0.85rem;">{uid}</td>
+                <td>{row_date}</td>
+                <td>{amt} €</td>
+                <td>{st}</td>
+                <td class="ah-muted" style="font-size:0.85rem;">{uid}</td>
             </tr>
             """
         history_html = f"""
-        <table style="width:100%; border-collapse:collapse; margin-top:8px;">
+        <table class="ah-table">
             <thead>
-                <tr style="text-align:left; border-bottom:2px solid #ccc;">
-                    <th style="padding:10px;">Date</th>
-                    <th style="padding:10px;">Amount</th>
-                    <th style="padding:10px;">Status</th>
-                    <th style="padding:10px; color:#666; font-weight:600; font-size:0.85rem;">Users</th>
+                <tr>
+                    <th>Date</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th class="ah-muted">Users</th>
                 </tr>
             </thead>
             <tbody>{rows_html}</tbody>
@@ -1684,13 +2115,13 @@ def artist_payouts(artist_id: int):
     b_attr = _html_escape(artist.payout_bank_info or "")
 
     config_section = f"""
-        <section style="margin-bottom:32px; padding:20px; border:1px solid #ffc10755; border-radius:12px; background:#fffdf5;">
-            <h2 style="margin-top:0;">Payout method (for future use)</h2>
-            <div style="margin-bottom:20px;">
+        <section class="ah-card ah-card--payout">
+            <h2>Payout method (for future use)</h2>
+            <div style="margin-bottom:1.25rem;">
                 {method_banner}
             </div>
             <h3 style="margin-top:0; font-size:1rem;">Update settings</h3>
-            <form method="post" action="/artist/{artist_id}/payout-method?admin_key={ADMIN_KEY}" style="max-width:520px;">
+            <form method="post" action="/artist/{artist_id}/payout-method?admin_key={ADMIN_KEY}" style="max-width:32rem;">
                 <p style="margin-bottom:10px;">
                     <label for="payout_method"><b>Payout method</b></label><br/>
                     <select name="payout_method" id="payout_method" style="margin-top:6px; min-width:200px;">
@@ -1701,56 +2132,52 @@ def artist_payouts(artist_id: int):
                 </p>
                 <p style="margin-bottom:10px;">
                     <label for="payout_wallet_address"><b>Wallet address</b> (crypto)</label><br/>
-                    <input type="text" name="payout_wallet_address" id="payout_wallet_address" maxlength="{MAX_PAYOUT_TEXT_LEN}" value="{w_attr}" style="width:100%; max-width:480px; margin-top:6px; box-sizing:border-box;" />
+                    <input type="text" name="payout_wallet_address" id="payout_wallet_address" maxlength="{MAX_PAYOUT_TEXT_LEN}" value="{w_attr}" style="width:100%; max-width:30rem; margin-top:6px; box-sizing:border-box;" />
                 </p>
                 <p style="margin-bottom:10px;">
                     <label for="payout_bank_info"><b>Bank details</b></label><br/>
-                    <textarea name="payout_bank_info" id="payout_bank_info" maxlength="{MAX_PAYOUT_TEXT_LEN}" rows="3" style="width:100%; max-width:480px; margin-top:6px; box-sizing:border-box;">{b_attr}</textarea>
+                    <textarea name="payout_bank_info" id="payout_bank_info" maxlength="{MAX_PAYOUT_TEXT_LEN}" rows="3" style="width:100%; max-width:30rem; margin-top:6px; box-sizing:border-box;">{b_attr}</textarea>
                 </p>
-                <p style="margin-bottom:0;">
-                    <button type="submit">Save payout method</button>
+                <p class="ah-form-actions">
+                    <button type="submit" class="ah-btn">Save payout method</button>
                 </p>
             </form>
-            <p style="margin-top:16px; margin-bottom:0; color:#666; font-size:0.85rem;">
+            <p class="ah-muted" style="margin-top:16px; margin-bottom:0; font-size:0.85rem;">
                 Saving does not move funds. This form includes the MVP admin key in the request URL.
             </p>
         </section>
     """
 
     html = f"""
-    <html>
-    <body style="font-family: Arial; padding: 40px; max-width: 900px;">
+    {_artist_hub_html_head(f"Artist {artist_id} — Payouts")}
+    <body class="artist-hub">
+    <div class="artist-hub-inner">
         <h1>Artist {artist_id} — Payouts</h1>
-        <div style="margin-top:16px; margin-bottom:24px;">
-            <a href="/artist-dashboard/{artist_id}">Overview</a> |
-            <a href="/artist-analytics/{artist_id}">Analytics</a> |
-            <a href="/artist-payouts/{artist_id}" style="font-weight:700;">Payouts</a> |
-            <a href="{_artist_upload_href(artist_id)}">Upload</a> |
-            <a href="/artist-profile/{artist_id}">Profile</a>
-        </div>
+        {_artist_hub_nav(artist_id, "payouts")}
 
         {config_section}
 
-        <section style="margin-bottom:32px; padding:20px; border:1px solid #6c757d44; border-radius:12px;">
-            <h2 style="margin-top:0;">Summary</h2>
+        <section class="ah-card ah-card--earnings">
+            <h2>Summary</h2>
             <p><b>Paid (on-chain):</b> {round(total_paid, 2)} €</p>
             <p><b>Accrued (not yet on-chain):</b> {round(total_accrued, 2)} €</p>
             <p><b>Pending (batch calculating):</b> {round(total_pending, 2)} €</p>
             <p><b>Number of batches:</b> {payout_count}</p>
             <p><b>Last batch date (top row):</b> {last_payout_date}</p>
-            <p style="margin-top:12px; color:#555; font-size:0.95rem;">
+            <p class="ah-lead" style="margin-top:12px;">
                 <b>Paid</b> requires <code>payout_settlements.execution_status = confirmed</code>.
                 <b>Accrued</b> is finalized/posted ledger without confirmed settlement.
             </p>
         </section>
 
-        <section style="margin-bottom:32px; padding:20px; border:1px solid #0d6efd33; border-radius:12px; background:#f8fbff;">
-            <h2 style="margin-top:0;">Payout history</h2>
-            <p style="color:#444; margin-bottom:12px;">
+        <section class="ah-card ah-card--compare">
+            <h2>Payout history</h2>
+            <p class="ah-lead" style="margin-bottom:12px;">
                 One row per payout batch (amount is this artist&apos;s share in that batch). Read-only.
             </p>
             {history_html}
         </section>
+    </div>
     </body></html>
     """
 
@@ -1766,25 +2193,19 @@ def artist_analytics(artist_id: int):
         db.close()
 
     html = f"""
-    <html>
-    <head>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    </head>
-    <body style="font-family: Arial; padding: 40px; max-width: 900px;">
+    {_artist_hub_html_head(
+        f"Artist {artist_id} — Analytics",
+        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>',
+    )}
+    <body class="artist-hub">
+    <div class="artist-hub-inner">
 
         <h1>Artist {artist_id} — Analytics</h1>
+        {_artist_hub_nav(artist_id, "analytics")}
 
-        <div style="margin-top:16px; margin-bottom:24px;">
-            <a href="/artist-dashboard/{artist_id}">Overview</a> |
-            <a href="/artist-analytics/{artist_id}" style="font-weight:700;">Analytics</a> |
-            <a href="/artist-payouts/{artist_id}">Payouts</a> |
-            <a href="{_artist_upload_href(artist_id)}">Upload</a> |
-            <a href="/artist-profile/{artist_id}">Profile</a>
-        </div>
-
-        <section style="margin-bottom:32px; padding:16px; border:1px solid #ddd; border-radius:10px;">
-            <h2 style="margin-top:0;">📊 Streams</h2>
-            <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
+        <section class="ah-card">
+            <h2>📊 Streams</h2>
+            <div class="ah-range-row">
                 <label for="streamsRange"><b>Range:</b></label>
                 <select id="streamsRange">
                     <option value="last_day">last_day</option>
@@ -1797,26 +2218,26 @@ def artist_analytics(artist_id: int):
                     <option value="last_5_years">last_5_years</option>
                 </select>
             </div>
-            <div id="streamsEmpty" style="display:none; color:#666; margin:8px 0 12px 0;">
+            <div id="streamsEmpty" class="ah-muted" style="display:none; margin:8px 0 12px 0;">
                 Not enough data yet
             </div>
-            <div id="streamsLoading" style="display:none; color:#666; margin:8px 0 12px 0;">
+            <div id="streamsLoading" class="ah-muted" style="display:none; margin:8px 0 12px 0;">
                 Loading...
             </div>
-            <canvas id="streamsChart" style="max-width:800px;"></canvas>
+            <canvas id="streamsChart" class="ah-chart-canvas"></canvas>
         </section>
 
-        <section style="margin-top:24px; margin-bottom:24px; padding:16px; border:1px solid #ddd; border-radius:10px;">
-            <h2 style="margin-top:0;">🎵 Top Songs (by streams)</h2>
-            <div id="topSongsEmpty" style="display:none; color:#666; margin:8px 0 12px 0;">
+        <section class="ah-card">
+            <h2>🎵 Top Songs (by streams)</h2>
+            <div id="topSongsEmpty" class="ah-muted" style="display:none; margin:8px 0 12px 0;">
                 Not enough data yet
             </div>
             <ol id="topSongsList" style="padding-left:22px; margin:0;"></ol>
         </section>
 
-        <section style="margin-top:24px; margin-bottom:24px; padding:16px; border:1px solid #ddd; border-radius:10px;">
-            <h2 style="margin-top:0;">👥 Top Fans</h2>
-            <div id="topFansEmpty" style="display:none; color:#666; margin:8px 0 12px 0;">
+        <section class="ah-card">
+            <h2>👥 Top Fans</h2>
+            <div id="topFansEmpty" class="ah-muted" style="display:none; margin:8px 0 12px 0;">
                 Not enough data yet
             </div>
             <ol id="topFansList" style="padding-left:22px; margin:0; list-style-position: outside;"></ol>
@@ -1869,15 +2290,29 @@ def artist_analytics(artist_id: int):
                             label: "Streams",
                             data: values,
                             fill: false,
-                            tension: 0.1
+                            tension: 0.1,
+                            borderColor: "#60a5fa",
+                            backgroundColor: "rgba(96, 165, 250, 0.12)",
+                            pointBackgroundColor: "#60a5fa",
+                            pointBorderColor: "#1e293b"
                         }}]
                     }},
                     options: {{
                         responsive: true,
+                        plugins: {{
+                            legend: {{
+                                labels: {{ color: "#a1a1aa" }}
+                            }}
+                        }},
                         scales: {{
+                            x: {{
+                                ticks: {{ color: "#a1a1aa" }},
+                                grid: {{ color: "#27272a" }}
+                            }},
                             y: {{
                                 beginAtZero: true,
-                                ticks: {{ precision: 0 }}
+                                ticks: {{ color: "#a1a1aa", precision: 0 }},
+                                grid: {{ color: "#27272a" }}
                             }}
                         }}
                     }}
@@ -1936,11 +2371,7 @@ def artist_analytics(artist_id: int):
                     const songStreams = Number(top.streams || 0);
                     const songTitle = top.title != null && top.title !== "" ? top.title : "—";
                     const li = document.createElement("li");
-                    li.style.marginBottom = "12px";
-                    li.style.padding = "12px";
-                    li.style.border = "1px solid #eee";
-                    li.style.borderRadius = "8px";
-                    li.style.background = "#fafafa";
+                    li.className = "ah-fan-item";
                     li.innerHTML =
                         "<strong>" + escapeHtml(row.username) + "</strong><br>" +
                         streams + " streams<br>" +
@@ -1961,6 +2392,7 @@ def artist_analytics(artist_id: int):
         loadTopSongs("last_30_days");
         loadTopFans("last_30_days");
         </script>
+    </div>
     </body></html>
     """
 

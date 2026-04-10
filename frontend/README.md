@@ -18,6 +18,10 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
+### Global player (listening ingestion)
+
+The app wraps all pages in `AudioPlayerProvider` (see `components/AppProviders.tsx`). Playback uses `NEXT_PUBLIC_API_BASE` (defaults to `http://127.0.0.1:8000`) and `NEXT_PUBLIC_LISTENING_USER_ID` (defaults to `1`) for the backend `X-User-Id` header on `/stream/*` calls.
+
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
 ## Learn More

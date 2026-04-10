@@ -10,7 +10,9 @@ class ListeningSession(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"))
+    song_id = Column(Integer, ForeignKey("songs.id"), nullable=True)
     started_at = Column(DateTime, default=datetime.utcnow)
     ended_at = Column(DateTime, nullable=True)
     total_duration = Column(Integer, default=0)
+    finalized_at = Column(DateTime, nullable=True)
 

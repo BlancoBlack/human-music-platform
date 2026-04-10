@@ -38,6 +38,7 @@ from app.models import (
     ingestion_lock,
     listening_event,
     listening_session,
+    listening_session_checkpoint,
     listening_aggregate,
     user_balance,
     artist,
