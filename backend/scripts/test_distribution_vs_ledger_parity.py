@@ -19,6 +19,10 @@ from app.models.payout_batch import PayoutBatch
 from app.models.song import Song
 from app.models.user import User
 from app.models.user_balance import UserBalance
+from app.services.user_service import (
+    SEED_LISTENER_PLACEHOLDER_PASSWORD,
+    create_user,
+)
 from app.services.global_model_v2_service import compare_models_v2_snapshot
 from app.services.payout_service import calculate_user_distribution, ensure_treasury_entities
 from app.services.payout_v2_snapshot_engine import generate_payout_lines
@@ -505,9 +509,13 @@ def _run_edge_case(name: str) -> dict[str, object]:
         try:
             z = db.query(User).filter(User.username == "listener_zero").first()
             if z is None:
-                z = User(username="listener_zero")
-                db.add(z)
-                db.flush()
+                z = create_user(
+                    db,
+                    "listener_zero@test.local",
+                    SEED_LISTENER_PLACEHOLDER_PASSWORD,
+                    "listener_zero",
+                    username="listener_zero",
+                )
             bal = db.query(UserBalance).filter(UserBalance.user_id == z.id).first()
             if bal is None:
                 db.add(UserBalance(user_id=z.id, monthly_amount=10.0))

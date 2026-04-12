@@ -13,24 +13,68 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from sqlalchemy import text
+from app.api.auth_routes import router as auth_router
 from app.api.routes import router
 from app.core.database import Base, SessionLocal, engine
-from app.core.sqlite_compat import ensure_song_credit_entries_position_column
+from app.core.sqlite_compat import (
+    ensure_auth_user_schema,
+    ensure_refresh_token_schema,
+    ensure_song_credit_entries_position_column,
+)
 from app.services.payout_service import ensure_treasury_entities, get_treasury_artist, get_treasury_song
 
 logger = logging.getLogger(__name__)
 
+
+_DEV_CANONICAL_ORIGIN = "http://localhost:3000"
+
+
+def _cors_allow_origins() -> list[str]:
+    """
+    Browsers reject ``Access-Control-Allow-Origin: *`` when credentials are used.
+    Set ``CORS_ORIGINS`` to a comma-separated list (default ``http://localhost:3000``).
+
+    ``http://localhost:3000`` is always included so cookie + credentialed flows work
+    in local dev even if ``CORS_ORIGINS`` is overridden without it.
+    """
+    raw = (os.getenv("CORS_ORIGINS", _DEV_CANONICAL_ORIGIN) or "")
+    parts = [o.strip() for o in raw.split(",") if o.strip()]
+    if not parts:
+        parts = [_DEV_CANONICAL_ORIGIN]
+    if _DEV_CANONICAL_ORIGIN not in parts:
+        parts = [_DEV_CANONICAL_ORIGIN, *parts]
+    return list(dict.fromkeys(parts))
+
+
+class DevOriginWarningMiddleware(BaseHTTPMiddleware):
+    """Log when the browser sends ``Origin`` with ``127.0.0.1`` (cookie/CORS mismatch vs ``localhost``)."""
+
+    async def dispatch(self, request: Request, call_next):
+        origin = (request.headers.get("origin") or "").strip()
+        if origin and "127.0.0.1" in origin:
+            logger.warning(
+                "Request Origin %r uses 127.0.0.1; prefer http://localhost for dev "
+                "(Next.js at http://localhost:3000 and NEXT_PUBLIC_API_BASE=http://localhost:8000) "
+                "so cookies and CORS match.",
+                origin,
+            )
+        return await call_next(request)
+
+
 app = FastAPI()
 
-# 🔥 CORS (CLAVE)
+# CORS: explicit origins when cookies / Authorization are used from the browser.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # en producción se restringe
+    allow_origins=_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(DevOriginWarningMiddleware)
 
 
 def _column_exists(conn, table_name: str, column_name: str) -> bool:
@@ -261,6 +305,8 @@ def startup_init() -> None:
     )
     Base.metadata.create_all(bind=engine)
     ensure_song_credit_entries_position_column(engine)
+    ensure_auth_user_schema(engine)
+    ensure_refresh_token_schema(engine)
     _ensure_listening_session_hybrid_schema()
     _ensure_listening_events_idempotency()
     _ensure_listening_events_correlation_id()
@@ -277,6 +323,7 @@ def startup_init() -> None:
         db.close()
 
 # rutas
+app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(router)
 
 _uploads_dir = Path("uploads")

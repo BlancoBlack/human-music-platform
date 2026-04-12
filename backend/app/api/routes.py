@@ -15,7 +15,6 @@ from fastapi import (
     Depends,
     File,
     Form,
-    Header,
     HTTPException,
     Query,
     Request,
@@ -26,6 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func
 
 # 🔥 nuevo import (service)
+from app.api.deps import get_listening_user_id
 from app.core.database import SessionLocal, get_db
 from app.models.artist import Artist
 from app.models.listening_event import ListeningEvent
@@ -944,33 +944,10 @@ def upload_song(
     }
 
 
-def get_current_user_id(
-    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
-    db=Depends(get_db),
-) -> int:
-    """
-    MVP-safe authentication for ingestion:
-    - require X-User-Id header
-    - validate it is an integer
-    - confirm the user exists
-    """
-    if x_user_id is None:
-        raise HTTPException(status_code=401, detail="Missing X-User-Id header")
-    try:
-        user_id = int(str(x_user_id).strip())
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=401, detail="Invalid X-User-Id header") from exc
-
-    exists = db.query(User.id).filter(User.id == user_id).first()
-    if exists is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user_id
-
-
 @router.post("/stream")
 def stream_event(
     request: Request,
-    user_id: int = Depends(get_current_user_id),
+    user_id: int = Depends(get_listening_user_id),
     song_id: int = Body(...),
     duration: int = Body(...),
     session_id: str | int | None = Body(default=None),
@@ -1008,7 +985,7 @@ def stream_event(
 def stream_start_session(
     request: Request,
     payload: StartSessionRequest,
-    user_id: int = Depends(get_current_user_id),
+    user_id: int = Depends(get_listening_user_id),
     db=Depends(get_db),
 ):
     _enforce_start_session_rate_limit(request, user_id)
@@ -1020,7 +997,7 @@ def stream_start_session(
 @router.post("/stream/checkpoint")
 def stream_checkpoint(
     request: Request,
-    user_id: int = Depends(get_current_user_id),
+    user_id: int = Depends(get_listening_user_id),
     session_id: int = Body(...),
     song_id: int = Body(...),
     sequence: int = Body(...),

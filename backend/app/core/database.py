@@ -31,6 +31,9 @@ Base = declarative_base()
 # 🔥 IMPORTANTE: importar modelos DESPUÉS de Base
 from app.models import (
     user,
+    user_profile,
+    user_role,
+    refresh_token,
     song,
     song_featured_artist,
     song_credit_entry,

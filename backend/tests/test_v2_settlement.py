@@ -19,7 +19,7 @@ from app.models.snapshot_listening_input import SnapshotListeningInput
 from app.models.snapshot_user_pool import SnapshotUserPool
 from app.models.song import Song
 from app.models.song_artist_split import SongArtistSplit
-from app.models.user import User
+from app.services.user_service import create_user
 from app.services.settlement_breakdown import (
     breakdown_totals_match,
     build_payout_breakdown,
@@ -85,9 +85,13 @@ def test_process_batch_settlement_mock_chain(memory_db):
     db.add(artist)
     db.flush()
 
-    user = User(username="u1")
-    db.add(user)
-    db.flush()
+    user = create_user(
+        db,
+        "u1@test.local",
+        "password1x",
+        "u1",
+        username="u1",
+    )
 
     song = Song(title="Track", artist_id=int(artist.id), is_system=False)
     db.add(song)
@@ -216,9 +220,13 @@ def test_resume_submitted_does_not_resend(memory_db):
     db.add(artist)
     db.flush()
 
-    user = User(username="u2")
-    db.add(user)
-    db.flush()
+    user = create_user(
+        db,
+        "u2@test.local",
+        "password1x",
+        "u2",
+        username="u2",
+    )
 
     song = Song(title="Track2", artist_id=int(artist.id), is_system=False)
     db.add(song)

@@ -9,7 +9,11 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 
 from app.core.database import Base, SessionLocal, engine
-from app.core.sqlite_compat import ensure_song_credit_entries_position_column
+from app.core.sqlite_compat import (
+    ensure_auth_user_schema,
+    ensure_refresh_token_schema,
+    ensure_song_credit_entries_position_column,
+)
 from app.models.artist import Artist
 from app.models.global_listening_aggregate import GlobalListeningAggregate
 from app.models.listening_aggregate import ListeningAggregate
@@ -26,9 +30,16 @@ from app.models.song_artist_split import SongArtistSplit
 from app.models.song_credit_entry import SongCreditEntry
 from app.models.song_featured_artist import SongFeaturedArtist
 from app.models.song_media_asset import SongMediaAsset
+from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.models.user_balance import UserBalance
+from app.models.user_profile import UserProfile
+from app.models.user_role import UserRole
 from app.services.stream_service import StreamService
+from app.services.user_service import (
+    SEED_LISTENER_PLACEHOLDER_PASSWORD,
+    create_user,
+)
 from app.workers.listen_worker import process_listening_event
 
 DEFAULT_TOTAL_EVENTS = 5000
@@ -102,6 +113,8 @@ def _ensure_sqlite_compat_columns() -> None:
 def ensure_schema() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_song_credit_entries_position_column(engine)
+    ensure_auth_user_schema(engine)
+    ensure_refresh_token_schema(engine)
     _ensure_sqlite_compat_columns()
 
 
@@ -124,6 +137,9 @@ def reset_existing_data() -> None:
         db.query(SongMediaAsset).delete(synchronize_session=False)
         db.query(Song).delete(synchronize_session=False)
         db.query(UserBalance).delete(synchronize_session=False)
+        db.query(RefreshToken).delete(synchronize_session=False)
+        db.query(UserProfile).delete(synchronize_session=False)
+        db.query(UserRole).delete(synchronize_session=False)
         db.query(Artist).delete(synchronize_session=False)
         db.query(User).delete(synchronize_session=False)
         db.commit()
@@ -138,9 +154,13 @@ def _upsert_users() -> list[User]:
         for name in _USER_NAMES:
             user = db.query(User).filter(User.username == name).first()
             if user is None:
-                user = User(username=name)
-                db.add(user)
-                db.flush()
+                user = create_user(
+                    db,
+                    f"{name}@seed.local",
+                    SEED_LISTENER_PLACEHOLDER_PASSWORD,
+                    display_name=name,
+                    username=name,
+                )
             out.append(user)
         db.commit()
         for u in out:

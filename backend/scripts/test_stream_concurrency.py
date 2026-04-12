@@ -3,7 +3,7 @@
 Concurrent POST /stream smoke test.
 
 Prerequisites:
-  - API running from backend/: ./.venv/bin/python -m uvicorn app.main:app (e.g. 127.0.0.1:8000)
+  - API running from backend/: ./.venv/bin/python -m uvicorn app.main:app --host localhost --port 8000
   - User X-User-Id exists in DB
   - song_id exists and duration meets validate_listen rules (e.g. 30s)
 
@@ -98,7 +98,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Concurrent /stream race test")
     parser.add_argument(
         "--base-url",
-        default="http://127.0.0.1:8000",
+        default="http://localhost:8000",
         help="API base URL (no trailing slash)",
     )
     parser.add_argument("--user-id", type=int, default=2, help="X-User-Id header")
