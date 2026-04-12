@@ -25,6 +25,11 @@ export type TokenResponse = {
   token_type: string;
 };
 
+export type ImpersonationInfo = {
+  actor_id: number;
+  actor_email: string | null;
+};
+
 export type UserMe = {
   id: number;
   email: string | null;
@@ -32,6 +37,12 @@ export type UserMe = {
   is_email_verified: boolean;
   display_name: string | null;
   roles: string[];
+  impersonation?: ImpersonationInfo | null;
+};
+
+export type ImpersonationTokenResponse = {
+  access_token: string;
+  impersonation: boolean;
 };
 
 async function readJsonError(res: Response): Promise<string> {
@@ -96,8 +107,26 @@ export async function getCurrentUser(): Promise<UserMe | null> {
 }
 
 /**
- * Mint a new access token using the httpOnly refresh cookie (or optional body).
+ * Dev-only: mint a short-lived impersonation access JWT. Requires backend
+ * ``APP_ENV=development`` (or ``dev``) and ``ENABLE_DEV_IMPERSONATION=true``.
+ * Caller must already hold a normal (non-impersonation) access token.
  */
+export async function impersonateUser(
+  targetUserId: number,
+): Promise<ImpersonationTokenResponse> {
+  const { getAuthHeaders } = await import("@/lib/authHeaders");
+  const res = await fetch(`${API_BASE}/auth/dev/impersonate`, {
+    method: "POST",
+    credentials: "include",
+    headers: { ...JSON_HEADERS, ...getAuthHeaders() },
+    body: JSON.stringify({ target_user_id: targetUserId }),
+  });
+  if (!res.ok) {
+    throw new Error(await readJsonError(res));
+  }
+  return res.json() as Promise<ImpersonationTokenResponse>;
+}
+
 export async function refreshToken(): Promise<TokenResponse | null> {
   const res = await fetch(`${API_BASE}/auth/refresh`, {
     method: "POST",
@@ -112,11 +141,10 @@ export async function refreshToken(): Promise<TokenResponse | null> {
   return res.json() as Promise<TokenResponse>;
 }
 
+/** Revokes refresh session via httpOnly cookie; does not send Authorization. */
 export async function logout(): Promise<void> {
   await fetch(`${API_BASE}/auth/logout`, {
     method: "POST",
     credentials: "include",
-    headers: JSON_HEADERS,
-    body: JSON.stringify({}),
   });
 }

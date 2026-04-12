@@ -42,12 +42,18 @@ type AuthContextValue = {
   accessToken: string | null;
   initializing: boolean;
   isAuthenticated: boolean;
+  /** True when access JWT is a dev impersonation token (`/auth/me` includes `impersonation`). */
+  isImpersonating: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<boolean>;
   /** One `/auth/me` fetch; use after profile-changing server actions. */
   refreshUser: () => Promise<void>;
+  /** Dev-only: act as another user (requires backend flags). */
+  impersonateUser: (targetUserId: number) => Promise<void>;
+  /** Exit impersonation by refreshing the real session from the httpOnly cookie. */
+  exitImpersonation: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -119,6 +125,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await syncUserFromMe();
   }, [syncUserFromMe]);
 
+  const impersonateUserFn = useCallback(
+    async (targetUserId: number) => {
+      const res = await auth.impersonateUser(targetUserId);
+      commitAccessToken(res.access_token);
+      await syncUserFromMe();
+    },
+    [commitAccessToken, syncUserFromMe],
+  );
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -159,10 +174,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(async () => {
-    await auth.logout();
+    try {
+      await auth.logout();
+    } catch (e) {
+      console.warn("Logout failed", e);
+    }
     commitAccessToken(null);
     setUser(null);
   }, [commitAccessToken]);
+
+  const exitImpersonation = useCallback(async () => {
+    const ok = await refreshSession();
+    if (!ok) {
+      await logout();
+    }
+  }, [refreshSession, logout]);
+
+  const isImpersonating = Boolean(user?.impersonation);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -170,21 +198,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       accessToken,
       initializing,
       isAuthenticated: user != null && !!accessToken,
+      isImpersonating,
       login,
       register,
       logout,
       refreshSession,
       refreshUser,
+      impersonateUser: impersonateUserFn,
+      exitImpersonation,
     }),
     [
       user,
       accessToken,
       initializing,
+      isImpersonating,
       login,
       register,
       logout,
       refreshSession,
       refreshUser,
+      impersonateUserFn,
+      exitImpersonation,
     ],
   );
 
