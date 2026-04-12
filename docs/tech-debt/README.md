@@ -25,10 +25,15 @@ This folder tracks **intentional deferrals** and **known gaps** from building th
 | [ingestion.md](./ingestion.md) | Listening pipeline integrity: sessions, checkpoints, finalize, recovery, server policy |
 | [player.md](./player.md) | Global audio client: timing accuracy, unload, background behavior, persistence |
 | [player_ux.md](./player_ux.md) | **LOW (Frontend / UX):** Advanced player polish — queue UI, waveform progress, “Up Next” preview |
-| [backend.md](./backend.md) | API, scaling, rate limits, session lifecycle, search (summary) |
-| [storage_and_media.md](./storage_and_media.md) | **MEDIUM:** Local `/uploads`, readable filenames, public paths → object storage, CDN, signed URLs, UUID keys |
+| [backend.md](./backend.md) | API, scaling, rate limits, session lifecycle, search (summary), schema evolution (credits, identifiers) |
+| [economics.md](./economics.md) | **HIGH / CRITICAL:** Payout wallet policy, rights entities, policy versioning vs `validate_listen`, settlement audit exports |
+| [infra.md](./infra.md) | **HIGH:** Observability, Postgres migration bundle, queues/workers, secrets, E2E tests, dev bootstrap polish |
+| [product.md](./product.md) | **MEDIUM / LOW:** Monetization, onboarding, dashboard depth, public API, geo analytics, fan score |
+| [storage_and_media.md](./storage_and_media.md) | **MEDIUM:** Local `/uploads`, readable filenames, public paths → object storage, CDN, signed URLs, UUID keys, transcoding |
 | [ux.md](./ux.md) | Surfaces around player, uploads, catalog, errors |
 | [search_scalability.md](./search_scalability.md) | **Deep dive:** artist search implementation, limits, options (Postgres/SQLite/external), upgrade triggers |
+| [auth-and-wallet.md](./auth-and-wallet.md) | **HIGH (future):** Deferred custodial/MPC wallet, KMS, signing isolation; OAuth/Web3Auth; migration from JWT + `Artist.payout_wallet_address` |
+| [auth-system.md](./auth-system.md) | **Auth umbrella:** refresh families / reuse / logout-all, CSRF, email flows, DB email NOT NULL, legacy header removal, frontend session, JWT risks, production checklist |
 
 ## Priority levels
 
@@ -42,12 +47,15 @@ This folder tracks **intentional deferrals** and **known gaps** from building th
 ## Suggested sequencing (non-binding)
 
 1. **CRITICAL ingestion + backend policy** alignment (what counts as a listen, refresh/orphans).
-2. **HIGH player** unload and engaged-time policy where antifraud cares.
-3. **HIGH/MEDIUM backend** rate limiting and session lifecycle for multi-instance deploys.
-4. **MEDIUM/LOW UX** once ingestion story is stable.
-5. **MEDIUM storage and media** ([storage_and_media.md](./storage_and_media.md)) before production scale or when private/unreleased playback policy is required.
-6. **LOW advanced player UX** ([player_ux.md](./player_ux.md)) — queue drawer, waveform, up-next preview — after streaming stability; optional before beta/public if UX is a launch gate.
+2. **CRITICAL economics** ([economics.md](./economics.md)) — align live validation with versioned policies before widening payout experiments.
+3. **HIGH player** unload and engaged-time policy where antifraud cares.
+4. **HIGH/MEDIUM backend** rate limiting and session lifecycle for multi-instance deploys; **HIGH infra** ([infra.md](./infra.md)) observability + E2E gates in parallel once deploys multiply.
+5. **Postgres + worker hardening** — pair [backend.md](./backend.md) ingestion locks with [infra.md](./infra.md) DB migration runbook.
+6. **MEDIUM/LOW UX** once ingestion story is stable; extend upload metadata per [ux.md](./ux.md) when partners require splits/identifiers ([backend.md](./backend.md)).
+7. **MEDIUM storage and media** ([storage_and_media.md](./storage_and_media.md)) before production scale or when private/unreleased playback policy is required (includes transcoding when egress/mobile matters).
+8. **Product** ([product.md](./product.md)) — monetization, onboarding, dashboard, public API — after reliability baseline.
+9. **LOW advanced player UX** ([player_ux.md](./player_ux.md)) — queue drawer, waveform, up-next preview — after streaming stability; optional before beta/public if UX is a launch gate.
 
 ---
 
-*Last curated as part of structured tech-debt documentation (MVP → production evolution).*
+*Last curated as part of structured tech-debt documentation (MVP → production evolution). Reconciliation pass: manual backlog vs codebase, 2026-04-12 — added economics / infra / product, merged items into existing category files without removing prior entries.*

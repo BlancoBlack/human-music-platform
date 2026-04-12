@@ -97,11 +97,54 @@ Checkpoints store sequence + position; no strong correlation to master duration 
 Race conditions could theoretically produce two valid-looking events without proper locking under Postgres.
 
 **Current behavior**  
-Warning + skipped lock on non-SQLite dialects per code comments.
+- **SQLite (today):** `ingestion_locks` upsert serializes writers per `(user_id, song_id)` before `validate_listen` + `ListeningEvent` insert—**safe for current MVP** on a single-node SQLite deployment.  
+- **Non-SQLite:** logs `ingestion_lock_skipped_unsupported_dialect` and **does not** apply an equivalent lock—**intentionally deferred** until Postgres is a real target, because a correct fix needs dialect-specific code paths (`FOR UPDATE` / advisory locks), preserved observability (`ingestion_lock_*` logs), and **concurrent integration tests** on both dialects (see module comment in `stream_service.py`).
 
 **Proposed solution**  
-Implement `FOR UPDATE` or advisory locks as spec’d in `stream_service.py` TODO.
+Implement `FOR UPDATE` or advisory locks as spec’d in `stream_service.py` TODO; treat this as part of a broader **infra hardening pass** when migrating off SQLite (pairs with [infra.md](./infra.md)).
 
 **Priority:** CRITICAL for **Postgres production**  
 
 **When to address:** **Before** switching economic traffic to Postgres multi-worker.
+
+---
+
+## Credit roles: `CHECK (role IN (...))` vs normalized `credit_roles` / enum
+
+**Description**  
+`song_credit_entries.role` is constrained with a SQL `CHECK` and mirrored allow-lists in Python (`CREDIT_ROLE_VALUES`) and the upload UI (`CREDIT_ROLES` in `UploadWizard`). This is **correct and consistent today**, but extending roles (e.g. songwriter, label) requires coordinated migrations + app changes in multiple places.
+
+**Why it matters**  
+Long-term catalog and royalty metadata will need **more credit types** and possibly **non-artist parties**; a single string column + widening `CHECK` becomes brittle.
+
+**Current behavior**  
+Fixed set: musician, mix engineer, mastering engineer, producer, studio—enforced at DB + API + frontend.
+
+**Proposed solution**  
+- Postgres: native `ENUM` or lookup table `credit_roles` with FK.  
+- Keep human labels for display; version migrations when adding roles.
+
+**Priority:** MEDIUM  
+
+**When to address:** When upload metadata expands (see [ux.md](./ux.md) upload pipeline) or when standardizing on Postgres.
+
+---
+
+## Per-song industry identifiers (ISRC, ISWC, on-chain logical id)
+
+**Description**  
+No first-class fields or generation pipeline for **ISRC**, **ISWC**, or a **stable blockchain-compatible identifier** per recording/composition today.
+
+**Why it matters**  
+Cross-platform attribution, PRO registration, and future on-chain anchoring need immutable, industry-standard or platform-generated IDs—not only internal integer `song.id`.
+
+**Current behavior**  
+Internal surrogate keys only; identifiers are not assigned at end of upload.
+
+**Proposed solution**  
+- Schema: nullable `isrc`, `iswc`, `platform_work_id` (or similar) with validation formats.  
+- Pipeline: generate or capture IDs after master is finalized; document precedence (artist-supplied vs minted).
+
+**Priority:** MEDIUM (HIGH when entering label/PRO integrations)
+
+**When to address:** After core upload + economics stability; before external registry or chain proofs depend on them.
