@@ -122,6 +122,21 @@ Optional: `source .venv/bin/activate` for an interactive shell — still prefer 
 
 **Windows:** use `.venv\Scripts\python.exe` in place of `./.venv/bin/python`.
 
+#### Password hashing (bcrypt compatibility)
+
+This repo pins **`passlib[bcrypt]==1.7.4`** and **`bcrypt==4.0.1`**. Newer **`bcrypt` (≥4.1)** removes APIs that Passlib 1.7.4 expects, which surfaces at runtime as:
+
+`AttributeError: module 'bcrypt' has no attribute '__about__'`
+
+If your venv picked up a newer bcrypt, reinstall the pinned stack from `backend/`:
+
+```bash
+./.venv/bin/python -m pip uninstall bcrypt -y
+./.venv/bin/python -m pip install "bcrypt==4.0.1" "passlib[bcrypt]==1.7.4"
+```
+
+Do **not** run `pip freeze > requirements.txt` unless you intend to refresh the whole dependency set deliberately.
+
 ---
 
 ### 3. Environment variables
@@ -146,6 +161,15 @@ AUTO_SETTLEMENT_ASYNC="1"
 
 # Browser origins allowed for credentialed CORS (comma-separated). http://localhost:3000 is always merged in if missing.
 CORS_ORIGINS="http://localhost:3000"
+
+# --- Auth (see backend/.env.example for full list) ---
+JWT_SECRET_KEY="your-super-secret-key-at-least-32-characters-long"
+JWT_ALGORITHM=HS256
+JWT_REFRESH_DAYS=30
+APP_ENV=development
+ENABLE_DEV_IMPERSONATION=true
+ENABLE_LEGACY_AUTH=false
+AUTH_COOKIE_SECURE=false
 ```
 
 | Variable | Purpose | Example |
@@ -157,6 +181,25 @@ CORS_ORIGINS="http://localhost:3000"
 | `AUTO_SETTLEMENT_ASYNC` | If enabled, settlement runs in a daemon thread after finalize. | `1` or `0` |
 | `CORS_ORIGINS` | Comma-separated browser origins for credentialed CORS. Defaults include `http://localhost:3000` (always enforced if omitted from the list). | `http://localhost:3000` |
 | `NEXT_APP_BASE_URL` | Next.js base URL for server-side links/redirects. | `http://localhost:3000` |
+
+### Environment variables (Auth System)
+
+`app/main.py` and `worker.py` call **`load_dotenv()`** so variables in **`backend/.env`** are available before routes import auth. If `JWT_SECRET_KEY` is missing or shorter than **32 characters**, token creation fails with a clear `RuntimeError`.
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `JWT_SECRET_KEY` | **Yes** | Secret for signing access and refresh JWTs (minimum **32** characters). |
+| `JWT_ALGORITHM` | No | Default `HS256`. |
+| `JWT_REFRESH_DAYS` | No | Refresh token lifetime in days (default `30`). |
+| `APP_ENV` / `ENV` | Recommended | e.g. `development` for local dev; used with `ENABLE_DEV_IMPERSONATION`. |
+| `ENABLE_DEV_IMPERSONATION` | No | Must be **false or unset in production**. When true with dev `APP_ENV`, enables `POST /auth/dev/impersonate`. |
+| `ENABLE_LEGACY_AUTH` | No | Default **`false`** (Bearer-only on listening). Deprecated: set `true` only temporarily for legacy clients that send `X-User-Id` without JWT — **not recommended for production**. |
+| `CORS_ORIGINS` | No | Credentialed CORS allowlist; see `main.py`. |
+| `AUTH_COOKIE_SECURE` | No | Set `true` when the API is served over HTTPS. |
+
+**Session model:** **`GET /auth/me`** requires **`Authorization: Bearer <access_jwt>`** only. The **httpOnly refresh cookie** is for **`POST /auth/refresh`**, **`POST /auth/logout`**, and is set on **register/login** — it is **not** used as a second identity mechanism for `/auth/me`.
+
+**Production:** rotate `JWT_SECRET_KEY` if exposed; never commit real `.env`; keep dev-only flags off.
 
 **Note:** `app/blockchain/algorand_client_v2.py` uses a **hardcoded** Algod URL (`https://testnet-api.algonode.cloud`) and empty token. Changing `NETWORK` does not switch RPC endpoints; use that only for explorer URLs.
 

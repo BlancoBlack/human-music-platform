@@ -1,6 +1,20 @@
 # Auth, session, and wallet — tech debt (consolidated)
 
-**Scope:** JWT access + refresh (DB `jti`, **rotation** on `POST /auth/refresh`), httpOnly refresh cookie (`hm_refresh_token`, path `/auth`), Next.js `AuthContext` + Bearer on API calls, optional legacy **`X-User-Id`** for listening (`ENABLE_LEGACY_AUTH`). **Per-user custodial wallets are not implemented**; payouts use **`Artist.payout_wallet_address`**. Wallet-only product/architecture notes stay in [auth-and-wallet.md](./auth-and-wallet.md).
+**Scope:** JWT access + refresh (DB `jti`, **rotation** on `POST /auth/refresh`), httpOnly refresh cookie (`hm_refresh_token`, path `/auth`), Next.js `AuthContext` + Bearer on API calls, **deprecated** optional **`X-User-Id`** for listening (opt-in via `ENABLE_LEGACY_AUTH=true` — default **false**). **Per-user custodial wallets are not implemented**; payouts use **`Artist.payout_wallet_address`**. Wallet-only product/architecture notes stay in [auth-and-wallet.md](./auth-and-wallet.md).
+
+---
+
+## 0. Identity model (authoritative)
+
+- **`Authorization: Bearer <access_jwt>`** is the **only** way the API identifies the caller for **`GET /auth/me`**, **`get_current_user`**, and other Bearer-protected routes. There is **no** cookie-based fallback for `/auth/me`.
+- **httpOnly `hm_refresh_token` cookie** (path **`/auth`**) is used **only** for **`POST /auth/refresh`** (rotate session + set new cookie), **`POST /auth/logout`** (revoke + clear cookie), and responses from **`POST /auth/register`** / **`POST /auth/login`** (set cookie). It is **not** a second identity source for **`/auth/me`**.
+- **Access JWT** is short-lived. It is either a normal **access** token (`typ=access`) or a **dev impersonation** access token (`typ=access_impersonation`); see **Dev impersonation** below.
+
+### Dev impersonation
+
+- **`POST /auth/dev/impersonate`** is **disabled unless** `APP_ENV`/`ENV` is **`development`** or **`dev`** **and** **`ENABLE_DEV_IMPERSONATION=true`**. In production, keep impersonation **off** (unset or `false`) and do **not** use `development`/`dev` for `APP_ENV` if you rely on this gate.
+- Returns a **short-lived access JWT only** — **no** new refresh token and **no** refresh-cookie rotation for impersonation.
+- **`GET /auth/me`** reflects impersonation when that access JWT is sent as **Bearer** (`impersonation` in JSON). Exiting uses **`POST /auth/refresh`** with the existing httpOnly cookie to mint a normal access token (`AuthContext.exitImpersonation` → `refreshSession()`).
 
 ---
 
@@ -82,7 +96,7 @@ The default **dev** app DB is **SQLite** (`DATABASE_URL` in `app/core/database.p
 
 ### Email validation limitations
 
-Validation in **`normalize_registration_email`** (register) is **intentionally minimal**:
+Validation in **`normalize_registration_email`** (**`/auth/register`** and **`/auth/login`**) is **intentionally minimal**:
 
 - Allows **short** domains that still satisfy the string rules (e.g. addresses like **`a@b.c`** if they pass length and `local` / `domain` / **`.`** checks).
 - **No MX** (or other DNS) checks — deliverability is not verified.
@@ -124,23 +138,22 @@ Validation in **`normalize_registration_email`** (register) is **intentionally m
 
 ---
 
-## 6. Legacy auth (`X-User-Id`)
+## 6. Legacy auth (`X-User-Id`) — deprecated
 
 **Current**
 
-- **`ENABLE_LEGACY_AUTH`** defaults **true** (`auth_config.py`). Listening/stream resolution accepts **`X-User-Id`** when no Bearer JWT is present (`deps.py`).
+- **`ENABLE_LEGACY_AUTH`** defaults **`false`** (`auth_config.py`). When set **`true`**, listening/stream resolution accepts **`X-User-Id`** without Bearer (`deps.py`). **Not recommended for production.**
 - Each use logs a **deprecation** style message (`DEPRECATED AUTH METHOD USED: X-User-Id header …`).
-- Frontend listening helper can still send **`X-User-Id`** from **`NEXT_PUBLIC_LISTENING_USER_ID`** for dev playback (`listening.ts`).
+- Frontend listening helper can still send **`X-User-Id`** from **`NEXT_PUBLIC_LISTENING_USER_ID`** for dev playback (`listening.ts`) only if legacy is enabled.
 
 **Risks**
 
-- Any client that can set headers can impersonate a numeric user id if legacy mode stays on (**header spoofing**).
+- With legacy enabled, any client that can set headers can impersonate a numeric user id (**header spoofing**).
 
 **Plan**
 
-- Track volume via logs / metrics (`deprecated_auth_header_used` or log queries).
-- Set **`ENABLE_LEGACY_AUTH=false`** in production once all clients send **Bearer** on listening routes.
-- Remove header path from **`get_listening_user_id`** and drop dev env reliance on **`NEXT_PUBLIC_LISTENING_USER_ID`** where replaced by real login.
+- Track volume via logs / metrics when legacy is temporarily on.
+- Keep **`ENABLE_LEGACY_AUTH=false`** in production; remove header path from **`get_listening_user_id`** once no callers need it.
 
 ---
 
@@ -202,7 +215,7 @@ Validation in **`normalize_registration_email`** (register) is **intentionally m
 
 ### MUST before production
 
-- [ ] **`ENABLE_LEGACY_AUTH=false`** once clients proven on Bearer-only listening, or explicitly accept header-spoofing risk.
+- [x] **`ENABLE_LEGACY_AUTH`** defaults **`false`**; confirm production env does **not** set it to `true` (header-spoofing risk).
 - [ ] **Rate limiting** on **`/auth/login`**, **`/auth/register`**, **`/auth/refresh`** (and related abuse surfaces).
 - [ ] **`JWT_SECRET_KEY`** (and refresh signing secret if distinct) strong, rotated with a runbook.
 - [ ] **Monitor** refresh failures / 401 spikes (rotation conflicts, theft attempts).

@@ -1,6 +1,6 @@
 # Auth + wallet (deferred architecture)
 
-**Status:** Postponed beyond current MVP. The app ships **JWT + refresh (httpOnly cookie) + email/password** and **optional legacy `X-User-Id` for listening**; **no custodial chain wallets** and **no Web3Auth** in production yet.
+**Status:** Postponed beyond current MVP. The app ships **JWT + refresh (httpOnly cookie) + email/password**. **`X-User-Id` for listening is deprecated** and **off by default** (`ENABLE_LEGACY_AUTH=false`); opt-in only for legacy clients. **No custodial chain wallets** and **no Web3Auth** in production yet.
 
 **Related:** Payout destination today is **`Artist.payout_wallet_address`** (settlement worker); any future “user wallet” must reconcile with that model (snapshot destination at batch finalization, single source of truth).
 
@@ -75,7 +75,7 @@
 | **Web3Auth** | Only after wallet custody model is fixed; avoid parallel “custodial DB key + Web3Auth” without a single trust story. |
 | **Device binding** | Bind refresh or session to device id / client attestation when threat model warrants it. |
 | **Session management** | Server-side session table or opaque refresh families; admin revoke; “logout all devices.” |
-| **Remove legacy header** | Turn **`ENABLE_LEGACY_AUTH=false`** when all clients send **Bearer JWT** on listening routes. |
+| **Remove legacy header** | **`ENABLE_LEGACY_AUTH`** defaults **`false`**; keep **`false`** in production. Remove the `X-User-Id` code path once no clients need it. |
 
 ---
 
@@ -86,7 +86,7 @@
 3. **Pilot signing service** — Off main API; fund with limited hot wallet; monitor logs and limits.
 4. **Dual-write period** — New users get wallet id + address; existing artists keep `payout_wallet_address` until explicitly migrated.
 5. **Cutover** — Stop accepting manual address edits without verification; require KMS/vendor path for new keys.
-6. **Deprecate legacy auth** — Remove `X-User-Id` path after client JWT rollout is verified in logs.
+6. **Deprecate legacy auth** — Remove `X-User-Id` path after client JWT rollout is verified in logs (legacy is already **default-off** in `auth_config.py`).
 
 **Ordering constraint:** (1) and (2) should precede any on-chain automation that spends real USDC at scale.
 
