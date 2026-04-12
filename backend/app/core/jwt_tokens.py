@@ -9,10 +9,14 @@ import jwt
 
 from app.core.auth_config import (
     ACCESS_TOKEN_EXPIRE,
+    IMPERSONATION_ACCESS_EXPIRE,
     JWT_ALGORITHM,
     REFRESH_TOKEN_EXPIRE,
     require_jwt_secret,
 )
+
+ACCESS_TYP = "access"
+ACCESS_IMPERSONATION_TYP = "access_impersonation"
 
 
 def _utcnow() -> datetime:
@@ -28,7 +32,27 @@ def create_access_token(user_id: int, *, secret: str | None = None) -> str:
         "sub": str(user_id),
         "iat": now,
         "exp": exp,
-        "typ": "access",
+        "typ": ACCESS_TYP,
+    }
+    return jwt.encode(payload, key, algorithm=JWT_ALGORITHM)
+
+
+def create_impersonation_access_token(
+    target_user_id: int,
+    actor_id: int,
+    *,
+    secret: str | None = None,
+) -> str:
+    """Dev-only: access JWT for ``target_user_id`` with ``actor`` who minted it."""
+    key = secret if secret is not None else require_jwt_secret()
+    now = _utcnow()
+    exp = now + IMPERSONATION_ACCESS_EXPIRE
+    payload = {
+        "sub": str(int(target_user_id)),
+        "actor": int(actor_id),
+        "iat": now,
+        "exp": exp,
+        "typ": ACCESS_IMPERSONATION_TYP,
     }
     return jwt.encode(payload, key, algorithm=JWT_ALGORITHM)
 
@@ -67,9 +91,19 @@ def decode_access_token(token: str, *, secret: str | None = None) -> dict:
         algorithms=[JWT_ALGORITHM],
         options={"require": ["exp", "iat", "sub"]},
     )
-    if data.get("typ") != "access":
-        raise jwt.InvalidTokenError("not an access token")
-    return data
+    typ = data.get("typ")
+    if typ == ACCESS_TYP:
+        return data
+    if typ == ACCESS_IMPERSONATION_TYP:
+        if data.get("actor") is None:
+            raise jwt.InvalidTokenError("impersonation token missing actor")
+        return data
+    raise jwt.InvalidTokenError("not an access token")
+
+
+def is_impersonation_token_payload(payload: dict) -> bool:
+    """True if JWT claims represent a dev impersonation access token."""
+    return payload.get("typ") == ACCESS_IMPERSONATION_TYP
 
 
 def decode_refresh_token(token: str, *, secret: str | None = None) -> dict:

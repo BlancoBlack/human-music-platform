@@ -1,11 +1,11 @@
 """Shared FastAPI dependencies (auth, DB).
 
-Listening ingestion migration (JWT vs X-User-Id):
-- Prefer ``Authorization: Bearer <access_token>`` (same JWT as ``/auth/login``).
-- If no bearer token is sent and ``ENABLE_LEGACY_AUTH`` is true (default), the
-  ``X-User-Id`` header is still accepted; each use logs
-  ``DEPRECATED AUTH METHOD USED`` with path, method, and user_id.
-- Set ``ENABLE_LEGACY_AUTH=false`` to reject header-only auth (production target).
+Streaming/listening endpoints use ``Authorization: Bearer <access_token>`` (same JWT
+as ``/auth/login``).
+
+The deprecated ``X-User-Id`` header is accepted only when ``ENABLE_LEGACY_AUTH=true``.
+**Default is ``false``** — do not enable in production; it bypasses cryptographic proof
+of identity.
 """
 
 from __future__ import annotations
@@ -20,7 +20,10 @@ from sqlalchemy.orm import Session
 
 from app.core.auth_config import is_legacy_header_auth_enabled
 from app.core.database import get_db
-from app.core.jwt_tokens import decode_access_token
+from app.core.jwt_tokens import (
+    decode_access_token,
+    is_impersonation_token_payload,
+)
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -28,17 +31,19 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 
-def _load_user_from_access_token(db: Session, token: str) -> User:
-    """Validate access JWT and return User (raises HTTPException on failure)."""
+def _bearer_token_from_credentials(
+    credentials: HTTPAuthorizationCredentials | None,
+) -> str | None:
+    if credentials is None or (credentials.scheme or "").lower() != "bearer":
+        return None
+    token = (credentials.credentials or "").strip()
+    return token or None
+
+
+def _user_from_access_payload(db: Session, payload: dict) -> User:
+    """Map decoded access (or impersonation access) claims to a ``User`` row."""
     try:
-        payload = decode_access_token(token)
         user_id = int(payload["sub"])
-    except jwt.PyJWTError:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from None
     except (TypeError, ValueError, KeyError):
         raise HTTPException(
             status_code=401,
@@ -56,27 +61,71 @@ def _load_user_from_access_token(db: Session, token: str) -> User:
     return user
 
 
-async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
-    db: Annotated[Session, Depends(get_db)],
+def resolve_user_from_access_token(
+    request: Request,
+    db: Session,
+    token: str,
 ) -> User:
-    if credentials is None or (credentials.scheme or "").lower() != "bearer":
+    """
+    Decode access JWT (including impersonation typ), set ``request.state`` impersonation
+    metadata, load user, enforce ``is_active``.
+    """
+    try:
+        payload = decode_access_token(token)
+    except jwt.PyJWTError:
         raise HTTPException(
             status_code=401,
-            detail="Not authenticated",
+            detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
-        )
-    token = (credentials.credentials or "").strip()
-    if not token:
-        raise HTTPException(
-            status_code=401,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user = _load_user_from_access_token(db, token)
+        ) from None
+    request.state.impersonation_actor_id = None
+    if is_impersonation_token_payload(payload):
+        try:
+            request.state.impersonation_actor_id = int(payload["actor"])
+        except (TypeError, ValueError, KeyError):
+            request.state.impersonation_actor_id = None
+    user = _user_from_access_payload(db, payload)
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Inactive user")
     return user
+
+
+async def require_non_impersonation(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+) -> None:
+    """
+    Reject requests that present an impersonation access JWT on ``Authorization``.
+    Use on payout, wallet, or admin-mutation routes when Bearer auth is present.
+    """
+    if credentials is None or (credentials.scheme or "").lower() != "bearer":
+        return
+    token = (credentials.credentials or "").strip()
+    if not token:
+        return
+    try:
+        payload = decode_access_token(token)
+    except jwt.PyJWTError:
+        return
+    if is_impersonation_token_payload(payload):
+        raise HTTPException(
+            status_code=403,
+            detail="This action is not allowed while impersonating another user",
+        )
+
+
+async def get_current_user(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
+    token = _bearer_token_from_credentials(credentials)
+    if token is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return resolve_user_from_access_token(request, db, token)
 
 
 def get_listening_user_id(
@@ -87,16 +136,12 @@ def get_listening_user_id(
 ) -> int:
     """
     Authenticate streaming/listening requests: JWT first, then optional
-    ``X-User-Id`` when legacy mode is enabled.
+    ``X-User-Id`` when legacy mode is explicitly enabled.
     """
-    token: str | None = None
-    if credentials is not None and (credentials.scheme or "").lower() == "bearer":
-        token = (credentials.credentials or "").strip() or None
+    token = _bearer_token_from_credentials(credentials)
 
     if token is not None:
-        user = _load_user_from_access_token(db, token)
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="Inactive user")
+        user = resolve_user_from_access_token(request, db, token)
         return int(user.id)
 
     if is_legacy_header_auth_enabled():

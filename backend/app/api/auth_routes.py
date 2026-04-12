@@ -17,12 +17,19 @@ from app.api.auth_cookies import (
     clear_refresh_cookie,
 )
 from app.api.deps import get_current_user
+from app.core.auth_config import is_dev_impersonation_enabled
 from app.core.database import get_db
 from app.core.jwt_tokens import (
     create_access_token,
+    create_impersonation_access_token,
     create_refresh_token,
     decode_refresh_token,
     new_refresh_jti,
+)
+from app.core.refresh_token_validate import (
+    load_refresh_token_row_for_revocation,
+    refresh_auth_fail,
+    validate_refresh_row_and_user,
 )
 from app.core.security import verify_password
 from app.models.refresh_token import RefreshToken
@@ -51,8 +58,8 @@ class LoginRequest(BaseModel):
 
     @field_validator("email")
     @classmethod
-    def normalize_email(cls, v: str) -> str:
-        return (v or "").strip().lower()
+    def validate_email(cls, v: str) -> str:
+        return normalize_registration_email(v)
 
 
 class RefreshRequest(BaseModel):
@@ -80,6 +87,11 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class ImpersonationState(BaseModel):
+    actor_id: int
+    actor_email: str | None = None
+
+
 class UserMeResponse(BaseModel):
     id: int
     email: str | None
@@ -87,8 +99,18 @@ class UserMeResponse(BaseModel):
     is_email_verified: bool
     display_name: str | None
     roles: list[str]
+    impersonation: ImpersonationState | None = None
 
     model_config = {"from_attributes": False}
+
+
+class ImpersonateRequest(BaseModel):
+    target_user_id: int = Field(..., ge=1, description="User id to act as (dev only)")
+
+
+class ImpersonationAccessResponse(BaseModel):
+    access_token: str
+    impersonation: bool = True
 
 
 def _issue_tokens(db: Session, user: User) -> TokenResponse:
@@ -164,6 +186,7 @@ def auth_login(
 
 @router.get("/me", response_model=UserMeResponse)
 def auth_me(
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> UserMeResponse:
@@ -175,6 +198,14 @@ def auth_me(
         .all()
     )
     roles = [r[0] for r in roles_q]
+    imp: ImpersonationState | None = None
+    actor_id = getattr(request.state, "impersonation_actor_id", None)
+    if actor_id is not None:
+        actor_row = db.query(User).filter(User.id == int(actor_id)).first()
+        imp = ImpersonationState(
+            actor_id=int(actor_id),
+            actor_email=actor_row.email if actor_row else None,
+        )
     return UserMeResponse(
         id=int(user.id),
         email=user.email,
@@ -182,15 +213,45 @@ def auth_me(
         is_email_verified=bool(user.is_email_verified),
         display_name=profile.display_name if profile else None,
         roles=roles,
+        impersonation=imp,
     )
 
 
-def _fail_refresh(detail: str, *, log_detail: str, extra: dict | None = None) -> None:
+@router.post("/dev/impersonate", response_model=ImpersonationAccessResponse)
+def auth_dev_impersonate(
+    request: Request,
+    body: ImpersonateRequest,
+    actor: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ImpersonationAccessResponse:
+    """Mint a short-lived impersonation access JWT (development + flag only)."""
+    if not is_dev_impersonation_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Dev impersonation is disabled",
+        )
+    if getattr(request.state, "impersonation_actor_id", None) is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot start impersonation while already impersonating",
+        )
+
+    target = db.query(User).filter(User.id == int(body.target_user_id)).first()
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not target.is_active:
+        raise HTTPException(status_code=403, detail="Inactive user")
+
     logger.info(
-        "auth_refresh_failure",
-        extra={"detail": log_detail, **(extra or {})},
+        "impersonation_started",
+        extra={
+            "actor_id": int(actor.id),
+            "target_user_id": int(target.id),
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        },
     )
-    raise HTTPException(status_code=401, detail=detail)
+    access = create_impersonation_access_token(int(target.id), int(actor.id))
+    return ImpersonationAccessResponse(access_token=access, impersonation=True)
 
 
 def _select_refresh_row_for_rotation(
@@ -231,12 +292,12 @@ def auth_refresh(
         REFRESH_COOKIE_NAME
     )
     if not raw:
-        _fail_refresh("Missing refresh token", log_detail="missing_token")
+        refresh_auth_fail("Missing refresh token", log_detail="missing_token")
 
     try:
         payload = decode_refresh_token(raw)
     except jwt.PyJWTError:
-        _fail_refresh(
+        refresh_auth_fail(
             "Invalid or expired refresh token",
             log_detail="jwt_decode_error",
         )
@@ -251,41 +312,11 @@ def auth_refresh(
         # One transaction, one commit (via ``begin()``): lock row → validate →
         # revoke → insert successor → mint access JWT. No ``flush``/``commit`` in between.
         with db.begin():
-            row = _select_refresh_row_for_rotation(db, jti=jti, user_id=user_id)
-            if row is None:
-                _fail_refresh(
-                    "Unknown refresh token",
-                    log_detail="unknown_jti",
-                    extra={"jti": jti, "user_id": user_id},
-                )
-
             now = datetime.utcnow()
-            if row.revoked_at is not None:
-                _fail_refresh(
-                    "Refresh token revoked",
-                    log_detail="already_revoked",
-                    extra={"jti": jti, "user_id": user_id},
-                )
-            if row.expires_at < now:
-                _fail_refresh(
-                    "Refresh token expired",
-                    log_detail="db_expired",
-                    extra={"jti": jti, "user_id": user_id},
-                )
-
-            user = db.query(User).filter(User.id == user_id).first()
-            if user is None:
-                _fail_refresh(
-                    "User not available",
-                    log_detail="user_missing",
-                    extra={"user_id": user_id},
-                )
-            if not user.is_active:
-                logger.info(
-                    "auth_refresh_failure",
-                    extra={"detail": "inactive_user", "user_id": user_id},
-                )
-                raise HTTPException(status_code=403, detail="Inactive user")
+            row = _select_refresh_row_for_rotation(db, jti=jti, user_id=user_id)
+            user = validate_refresh_row_and_user(
+                db, row=row, jti=jti, user_id=user_id, now=now
+            )
 
             row.revoked_at = now
             new_jti = new_refresh_jti()
@@ -334,21 +365,10 @@ def auth_logout(
         clear_refresh_cookie(response)
         return None
     try:
-        payload = decode_refresh_token(raw)
-    except jwt.PyJWTError:
+        row = load_refresh_token_row_for_revocation(db, raw)
+    except HTTPException:
         clear_refresh_cookie(response)
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token") from None
-
-    jti = payload["jti"]
-    user_id = int(payload["sub"])
-    row = (
-        db.query(RefreshToken)
-        .filter(RefreshToken.jti == jti, RefreshToken.user_id == user_id)
-        .first()
-    )
-    if row is None:
-        clear_refresh_cookie(response)
-        raise HTTPException(status_code=401, detail="Unknown refresh token")
+        raise
     if row.revoked_at is None:
         row.revoked_at = datetime.utcnow()
     db.commit()

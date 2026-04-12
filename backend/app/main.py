@@ -1,14 +1,16 @@
 import logging
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load backend/.env regardless of process cwd (uvicorn/IDE often start from repo root).
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_BACKEND_ROOT / ".env")
 
 from app.core.logging_config import setup_logging
 
 setup_logging()
-
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

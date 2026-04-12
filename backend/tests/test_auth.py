@@ -165,3 +165,109 @@ def test_me_inactive_forbidden(client_and_session) -> None:
 
     r_me = client.get("/auth/me", headers={"Authorization": f"Bearer {access}"})
     assert r_me.status_code == 403
+
+
+def test_dev_impersonation_disabled_without_flags(
+    client_and_session, monkeypatch
+) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("ENABLE_DEV_IMPERSONATION", "true")
+    client, _ = client_and_session
+    r = client.post(
+        "/auth/register",
+        json={"email": "imp.blocked@example.com", "password": "password1"},
+    )
+    assert r.status_code == 200, r.text
+    tok = r.json()["access_token"]
+    r2 = client.post(
+        "/auth/dev/impersonate",
+        json={"target_user_id": 1},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert r2.status_code == 403
+
+
+def test_dev_impersonation_when_enabled(monkeypatch, client_and_session) -> None:
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("ENABLE_DEV_IMPERSONATION", "true")
+    client, _ = client_and_session
+    r1 = client.post(
+        "/auth/register",
+        json={"email": "actor.imp@example.com", "password": "password1"},
+    )
+    assert r1.status_code == 200, r1.text
+    actor_tok = r1.json()["access_token"]
+    actor_me = client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {actor_tok}"}
+    ).json()
+    actor_id = int(actor_me["id"])
+
+    r2 = client.post(
+        "/auth/register",
+        json={"email": "target.imp@example.com", "password": "password1"},
+    )
+    assert r2.status_code == 200, r2.text
+    target_tok = r2.json()["access_token"]
+    target_me = client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {target_tok}"}
+    ).json()
+    target_id = int(target_me["id"])
+
+    r_imp = client.post(
+        "/auth/dev/impersonate",
+        json={"target_user_id": target_id},
+        headers={"Authorization": f"Bearer {actor_tok}"},
+    )
+    assert r_imp.status_code == 200, r_imp.text
+    body = r_imp.json()
+    assert body.get("impersonation") is True
+    imp_tok = body["access_token"]
+
+    r_me = client.get("/auth/me", headers={"Authorization": f"Bearer {imp_tok}"})
+    assert r_me.status_code == 200, r_me.text
+    me = r_me.json()
+    assert me["email"] == "target.imp@example.com"
+    assert me["impersonation"]["actor_id"] == actor_id
+    assert me["impersonation"]["actor_email"] == "actor.imp@example.com"
+
+
+def test_impersonation_blocked_on_payout_method_with_bearer(
+    monkeypatch, client_and_session
+) -> None:
+    """Bearer impersonation JWT must not call payout mutation even with admin_key."""
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("ENABLE_DEV_IMPERSONATION", "true")
+    client, _ = client_and_session
+    r1 = client.post(
+        "/auth/register",
+        json={"email": "payout.actor@example.com", "password": "password1"},
+    )
+    actor_tok = r1.json()["access_token"]
+    r2 = client.post(
+        "/auth/register",
+        json={"email": "payout.target@example.com", "password": "password1"},
+    )
+    target_id = client.get(
+        "/auth/me", headers={"Authorization": f"Bearer {r2.json()['access_token']}"}
+    ).json()["id"]
+    imp_tok = client.post(
+        "/auth/dev/impersonate",
+        json={"target_user_id": target_id},
+        headers={"Authorization": f"Bearer {actor_tok}"},
+    ).json()["access_token"]
+
+    r_block = client.post(
+        "/artist/999999/payout-method?admin_key=x",
+        data={
+            "payout_method": "none",
+            "payout_wallet_address": "",
+            "payout_bank_info": "",
+        },
+        headers={"Authorization": f"Bearer {imp_tok}"},
+    )
+    assert r_block.status_code == 403
+
+
+def test_me_unauthenticated(client_and_session) -> None:
+    client, _ = client_and_session
+    assert client.get("/auth/me").status_code == 401

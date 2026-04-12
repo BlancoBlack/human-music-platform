@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func
 
 # 🔥 nuevo import (service)
-from app.api.deps import get_listening_user_id
+from app.api.deps import get_listening_user_id, require_non_impersonation
 from app.core.database import SessionLocal, get_db
 from app.models.artist import Artist
 from app.models.listening_event import ListeningEvent
@@ -1586,6 +1586,7 @@ def post_artist_payout_method(
     payout_method: str = Form(...),
     payout_wallet_address: str = Form(""),
     payout_bank_info: str = Form(""),
+    _reject_impersonation: None = Depends(require_non_impersonation),
 ):
     if admin_key != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
@@ -1694,6 +1695,7 @@ def get_admin_payouts(
 def post_admin_settle_batch(
     batch_id: int,
     admin_key: str = Query(..., description="MVP shared secret; compare to ADMIN_KEY"),
+    _reject_impersonation: None = Depends(require_non_impersonation),
 ):
     """Run V2 on-chain settlement for all artists in a finalized/posted batch."""
     if admin_key != ADMIN_KEY:
@@ -1712,6 +1714,7 @@ def post_admin_retry_payout(
     artist_id: Optional[str] = Query(None),
     artist_name: Optional[str] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=500),
+    _reject_impersonation: None = Depends(require_non_impersonation),
 ):
     if admin_key != ADMIN_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
