@@ -1,6 +1,6 @@
 "use client";
 
-import { API_BASE } from "@/lib/api";
+import { API_BASE } from "@/lib/publicEnv";
 
 type HubTab = "overview" | "analytics" | "payouts" | "catalog" | "upload";
 
@@ -15,7 +15,7 @@ type ArtistHubNavProps = {
 export function ArtistHubNav({ artistId, active }: ArtistHubNavProps) {
   const id = artistId;
   const dash = `${API_BASE}/artist-dashboard/${id}`;
-  const analytics = `${API_BASE}/artist-analytics/${id}`;
+  const analytics = `/artist-analytics?artist_id=${id}`;
   const payouts = `${API_BASE}/artist-payouts/${id}`;
   const catalog = `/artist-catalog?artist_id=${id}`;
   const upload = `/artist-upload?artist_id=${id}`;

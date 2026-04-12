@@ -20,7 +20,9 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 ### Global player (listening ingestion)
 
-The app wraps all pages in `AudioPlayerProvider` (see `components/AppProviders.tsx`). Playback uses `NEXT_PUBLIC_API_BASE` (defaults to `http://127.0.0.1:8000`) and `NEXT_PUBLIC_LISTENING_USER_ID` (defaults to `1`) for the backend `X-User-Id` header on `/stream/*` calls.
+The app wraps all pages in `AudioPlayerProvider` (see `components/AppProviders.tsx`). Playback uses `NEXT_PUBLIC_API_BASE` (defaults to `http://localhost:8000`; set in `.env.local` — see `.env.example`) and `NEXT_PUBLIC_LISTENING_USER_ID` (defaults to `1`) for the backend `X-User-Id` header on `/stream/*` calls.
+
+For auth cookies and CORS, run the Next dev server at **http://localhost:3000** and point `NEXT_PUBLIC_API_BASE` at **http://localhost:8000** (not `127.0.0.1`).
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 

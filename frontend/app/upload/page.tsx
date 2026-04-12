@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { AuthGuard } from "@/components/AuthGuard";
 import { UploadWizard } from "@/components/UploadWizard";
 
 function UploadPageInner() {
@@ -25,7 +26,11 @@ function UploadPageInner() {
     );
   }
 
-  return <UploadWizard basePath="/upload" />;
+  return (
+    <AuthGuard>
+      <UploadWizard basePath="/upload" />
+    </AuthGuard>
+  );
 }
 
 export default function UploadPage() {

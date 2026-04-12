@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArtistHubNav } from "@/components/ArtistHubNav";
+import { AuthGuard } from "@/components/AuthGuard";
 import { UploadWizard } from "@/components/UploadWizard";
 import { API_BASE, fetchArtist, fetchSong } from "@/lib/api";
 
@@ -218,7 +219,9 @@ export default function ArtistUploadPage() {
         </main>
       }
     >
-      <ArtistUploadInner />
+      <AuthGuard>
+        <ArtistUploadInner />
+      </AuthGuard>
     </Suspense>
   );
 }

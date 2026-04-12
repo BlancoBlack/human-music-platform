@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArtistHubNav } from "@/components/ArtistHubNav";
+import { AuthGuard } from "@/components/AuthGuard";
 import { useAudioPlayer } from "@/components/audio/AudioPlayerProvider";
 import {
   API_BASE,
@@ -392,7 +393,9 @@ export default function ArtistCatalogPage() {
         </main>
       }
     >
-      <ArtistCatalogInner />
+      <AuthGuard>
+        <ArtistCatalogInner />
+      </AuthGuard>
     </Suspense>
   );
 }

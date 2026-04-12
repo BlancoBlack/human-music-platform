@@ -1,4 +1,4 @@
-import { API_BASE } from "@/lib/api";
+import { API_BASE } from "@/lib/publicEnv";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

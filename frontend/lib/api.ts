@@ -1,9 +1,25 @@
-/**
- * Backend base URL (same origin-friendly for static /uploads).
- */
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") ??
-  "http://127.0.0.1:8000";
+import { getAuthHeaders } from "@/lib/authHeaders";
+import { API_BASE } from "@/lib/publicEnv";
+
+export { API_BASE };
+
+/** Authenticated API calls: merges `Authorization` when logged in; sends cookies for `/auth/*`. */
+export async function apiFetch(
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const url = `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+  const merged = new Headers(init.headers);
+  const auth = getAuthHeaders();
+  for (const [k, v] of Object.entries(auth)) {
+    if (!merged.has(k)) merged.set(k, v);
+  }
+  return fetch(url, {
+    ...init,
+    headers: merged,
+    credentials: init.credentials ?? "include",
+  });
+}
 
 export type SongDetail = {
   id: number;
@@ -27,7 +43,7 @@ export class ApiNotFoundError extends Error {
 }
 
 export async function fetchSong(songId: number): Promise<SongDetail> {
-  const res = await fetch(`${API_BASE}/songs/${songId}`);
+  const res = await apiFetch(`/songs/${songId}`);
   if (res.status === 404) {
     throw new ApiNotFoundError("Song not found");
   }
@@ -44,7 +60,7 @@ export type ArtistPublic = {
 };
 
 export async function fetchArtist(artistId: number): Promise<ArtistPublic> {
-  const res = await fetch(`${API_BASE}/artists/${artistId}`);
+  const res = await apiFetch(`/artists/${artistId}`);
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Failed to load artist ${artistId}`);
@@ -77,9 +93,7 @@ export async function fetchArtistSongs(
   limit = 50,
 ): Promise<ArtistCatalogResponse> {
   const params = new URLSearchParams({ limit: String(limit) });
-  const res = await fetch(
-    `${API_BASE}/artists/${artistId}/songs?${params}`,
-  );
+  const res = await apiFetch(`/artists/${artistId}/songs?${params}`);
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Failed to load songs for artist ${artistId}`);
@@ -92,7 +106,7 @@ export async function searchArtists(
   limit = 10,
 ): Promise<ArtistsSearchResponse> {
   const params = new URLSearchParams({ q, limit: String(limit) });
-  const res = await fetch(`${API_BASE}/artists/search?${params}`);
+  const res = await apiFetch(`/artists/search?${params}`);
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || "Artist search failed");

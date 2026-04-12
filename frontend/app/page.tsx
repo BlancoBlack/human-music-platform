@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { API_BASE } from "@/lib/publicEnv";
 
 export default function Home() {
   const [balance, setBalance] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
   const fetchBalance = () => {
-    fetch("http://127.0.0.1:8000/balance")
+    fetch(`${API_BASE}/balance`)
       .then((res) => res.json())
       .then((data) => setBalance(data));
   };
@@ -20,7 +21,7 @@ export default function Home() {
   const handleStream = async () => {
     setLoading(true);
 
-    await fetch("http://127.0.0.1:8000/stream", {
+    await fetch(`${API_BASE}/stream`, {
       method: "POST",
     });
 
@@ -38,6 +39,18 @@ export default function Home() {
           className="text-sm font-medium text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
         >
           Upload song
+        </Link>
+        <Link
+          href="/login"
+          className="text-sm font-medium text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
+        >
+          Sign in
+        </Link>
+        <Link
+          href="/register"
+          className="text-sm font-medium text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
+        >
+          Register
         </Link>
       </div>
       <h1 className="text-2xl font-bold mb-4">

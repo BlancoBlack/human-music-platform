@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   API_BASE,
+  apiFetch,
   fetchArtist,
   fetchSong,
   parseErrorPayload,
@@ -329,7 +330,7 @@ export function UploadWizard({
     try {
       const featured_artist_ids = featuredPicks.map((p) => p.id);
       const credits = creditRows.filter((r) => r.name.trim());
-      const res = await fetch(`${API_BASE}/songs`, {
+      const res = await apiFetch(`/songs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -364,7 +365,7 @@ export function UploadWizard({
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${API_BASE}/songs/${songId}/upload-audio`, {
+      const res = await apiFetch(`/songs/${songId}/upload-audio`, {
         method: "POST",
         body: fd,
       });
@@ -399,7 +400,7 @@ export function UploadWizard({
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${API_BASE}/songs/${songId}/upload-cover`, {
+      const res = await apiFetch(`/songs/${songId}/upload-cover`, {
         method: "POST",
         body: fd,
       });
