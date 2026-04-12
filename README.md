@@ -39,8 +39,10 @@ Edit `backend/.env` as needed (see **Environment variables**).
 
 **3. API** (`backend/`):
 
+Use hostname **`localhost`** (not `127.0.0.1`) so the browser, cookies, and `NEXT_PUBLIC_API_BASE` all agree.
+
 ```bash
-./.venv/bin/python -m uvicorn app.main:app --reload
+./.venv/bin/python -m uvicorn app.main:app --reload --host localhost --port 8000
 ```
 
 **4. Worker** (`backend/`, same shell conventions):
@@ -51,11 +53,13 @@ Edit `backend/.env` as needed (see **Environment variables**).
 
 **5. Frontend** (`frontend/`):
 
-Create `frontend/.env.local`:
+Create `frontend/.env.local` (see `frontend/.env.example`):
 
 ```env
-NEXT_PUBLIC_API_BASE=http://127.0.0.1:8000
+NEXT_PUBLIC_API_BASE=http://localhost:8000
 ```
+
+Open the app at **http://localhost:3000** (not `http://127.0.0.1:3000`) so refresh cookies and CORS line up with the API.
 
 Then:
 
@@ -139,6 +143,9 @@ AUTO_SETTLEMENT_AFTER_FINALIZE="1"
 
 # Optional: run auto-settlement in a background thread vs same thread (default on).
 AUTO_SETTLEMENT_ASYNC="1"
+
+# Browser origins allowed for credentialed CORS (comma-separated). http://localhost:3000 is always merged in if missing.
+CORS_ORIGINS="http://localhost:3000"
 ```
 
 | Variable | Purpose | Example |
@@ -148,6 +155,8 @@ AUTO_SETTLEMENT_ASYNC="1"
 | `SETTLEMENT_TX_WAIT_ROUNDS` | Passed to algod confirmation wait for settlements. | `1000` |
 | `AUTO_SETTLEMENT_AFTER_FINALIZE` | After V2 batch finalize, trigger settlement unless disabled. | `1` or `0` |
 | `AUTO_SETTLEMENT_ASYNC` | If enabled, settlement runs in a daemon thread after finalize. | `1` or `0` |
+| `CORS_ORIGINS` | Comma-separated browser origins for credentialed CORS. Defaults include `http://localhost:3000` (always enforced if omitted from the list). | `http://localhost:3000` |
+| `NEXT_APP_BASE_URL` | Next.js base URL for server-side links/redirects. | `http://localhost:3000` |
 
 **Note:** `app/blockchain/algorand_client_v2.py` uses a **hardcoded** Algod URL (`https://testnet-api.algonode.cloud`) and empty token. Changing `NETWORK` does not switch RPC endpoints; use that only for explorer URLs.
 
@@ -155,7 +164,7 @@ AUTO_SETTLEMENT_ASYNC="1"
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `NEXT_PUBLIC_API_BASE` | FastAPI base URL for browser `fetch` calls | `http://127.0.0.1:8000` |
+| `NEXT_PUBLIC_API_BASE` | FastAPI base URL for browser `fetch` calls | `http://localhost:8000` |
 
 ---
 
