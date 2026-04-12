@@ -35,4 +35,26 @@ Uploaded audio (and, to a lesser extent, covers) are stored **on the local files
 
 ---
 
+## Transcoding: WAV masters → MP3 / FLAC (or other derivatives)
+
+**Description**  
+Upload pipeline accepts **master WAV** (validated size/type) and stores that object; there is **no automated transcoding** to MP3, FLAC, AAC, or other delivery formats (including downsampled 16-bit or loudness-normalized variants).
+
+**Why it matters**  
+Bandwidth, mobile playback, and partner integrations often expect compressed or alternate lossless derivatives; keeping a single huge WAV per song increases egress cost and client buffer pressure.
+
+**Current behavior**  
+Single master WAV on disk / served path; client plays WAV URL (see also [player.md](./player.md) buffering discussion).
+
+**Proposed solution**  
+- Background job after upload: ffmpeg (or managed transcoder) → e.g. MP3 + FLAC keys in object storage.  
+- `Song` / `SongMediaAsset`: multiple renditions with `kind` + bitrate; API returns preferred URL per client.  
+- Coordinate with the **object-key + signed URL** direction documented earlier in this file.
+
+**Priority:** MEDIUM  
+
+**When to address:** Before broad mobile / metered-network launch or when CDN egress cost matters; optional for dev-only iteration.
+
+---
+
 *File added to capture storage/delivery debt explicitly; complements API and ingestion docs.*

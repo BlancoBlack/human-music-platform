@@ -49,20 +49,23 @@ Console-only for critical ingestion paths; catalog may show generic play errors.
 ## Upload flow improvements
 
 **Description**  
-`UploadWizard` and related flows may need clearer states, error mapping, and progress for large masters.
+`UploadWizard` and related flows may need clearer states, error mapping, and progress for large masters. Separately, the **metadata model** for supply-side catalog is still MVP-scoped relative to a full rights-aware platform.
 
 **Why it matters**  
-Upload is the supply side of the catalog; friction reduces content.
+Upload is the supply side of the catalog; friction reduces content. Missing **credits, splits, and rights** fields block label-grade payouts and discovery features later.
 
 **Current behavior**  
-Functional MVP; see existing components and API error shapes (`wav_file_too_large`, etc.).
+- **UX:** Functional MVP; see existing components and API error shapes (`wav_file_too_large`, etc.).  
+- **Metadata captured today (representative):** song title; **featured artists** (by artist id—no percentage split on collaborators); **credits** with roles: musician, mix engineer, mastering engineer, producer, studio (name + role per row).  
+- **Not modeled in upload/API today:** songwriter and label as credit roles; **royalty % splits** for collaborators and non-artist entities; **ownership / rights / publishers**; **genre, subgenre, mood, audio characteristics** (beyond duration from WAV).
 
 **Proposed solution**  
-UX audit: chunked upload if needed, clearer validation messages, resume failed uploads.
+- **UX:** Chunked upload if needed, clearer validation messages, resume failed uploads.  
+- **Data model (pairs with [backend.md](./backend.md) identifiers + credit-role evolution):** extend schema and wizard steps for additional credit types, split tables, rights parties—behind explicit product scope.
 
 **Priority:** MEDIUM  
 
-**When to address:** **Post-MVP** as catalog grows.
+**When to address:** **Post-MVP** as catalog grows; schema work sooner if external partners require splits/ISRC before UX polish.
 
 ---
 

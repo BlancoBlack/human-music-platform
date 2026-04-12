@@ -105,3 +105,24 @@ Client clears refs and logs; server session remains open until finalized or manu
 **Priority:** HIGH  
 
 **When to address:** **Post-MVP**; before high-volume production traffic.
+
+---
+
+## `ListeningSession` is metadata for events today (not antifraud input)
+
+**Description**  
+Hybrid ingestion binds a `ListeningEvent` to a `ListeningSession` row (`session_id` on the event). **Checkpoint trails** and **session idle (410)** behavior are documented as **not** feeding `validate_listen`, daily caps, spacing, or payout weights—see `listening_checkpoint_service` module comment and `validate_listen` implementation (duration + repeat history only).
+
+**Why it matters**  
+Product may later want **session-based antifraud** (e.g. require recent checkpoints before a finalize counts), **session-scoped rate limits**, or **session analytics** tied to economics. Today, tightening the coupling would add complexity without changing economic outcomes.
+
+**Current behavior**  
+If the client supplies `listening_session_id`, the server checks the row exists and belongs to the user **before** acquiring the ingestion lock and calling `validate_listen`; `validate_listen` does **not** read session or checkpoint tables.
+
+**Proposed solution**  
+- If product requires it: define explicit rules (e.g. min checkpoints, max gap before finalize) and enforce in `stream_service` / validation path with tests.  
+- Until then: keep treating sessions as **integrity/metadata** for the hybrid client, not an economic proof layer.
+
+**Priority:** MEDIUM (optional product fork)  
+
+**When to address:** Only when implementing session-based limits, antifraud, or analytics that must align with `ListeningEvent` semantics.
