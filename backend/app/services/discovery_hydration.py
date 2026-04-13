@@ -1,0 +1,343 @@
+"""
+Discovery Step 4: batch hydration for /discovery/home.
+
+Uses the same public URL rules as catalog endpoints (``media_urls.public_media_url_from_stored_path``).
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.models.artist import Artist
+from app.models.song import Song
+from app.models.song_media_asset import (
+    SONG_MEDIA_KIND_COVER_ART,
+    SONG_MEDIA_KIND_MASTER_AUDIO,
+    SongMediaAsset,
+)
+from app.services.discovery_row_normalize import (
+    UNKNOWN_ARTIST,
+    UNKNOWN_TRACK,
+    normalize_discovery_track_row,
+    normalize_discovery_sections_response,
+)
+from app.services.media_urls import public_media_url_from_stored_path
+
+logger = logging.getLogger(__name__)
+
+_MAX_HYDRATION_WARNINGS = 5
+
+_SECTION_KEYS = ("play_now", "for_you", "explore", "curated")
+
+
+def build_placeholder(song_id: int) -> dict:
+    """Single source for missing / invalid song rows (pre-normalization shape)."""
+    return {
+        "id": int(song_id),
+        "title": UNKNOWN_TRACK,
+        "artist_name": UNKNOWN_ARTIST,
+        "audio_url": None,
+        "cover_url": None,
+        "playable": False,
+    }
+
+
+def build_union_ids(sections: dict[str, list[int]]) -> list[int]:
+    """First-seen order: play_now → for_you → explore → curated. Values coerced to int."""
+    seen: set[int] = set()
+    out: list[int] = []
+    for key in _SECTION_KEYS:
+        for raw in sections.get(key) or []:
+            sid = int(raw)
+            if sid in seen:
+                continue
+            seen.add(sid)
+            out.append(sid)
+    return out
+
+
+def _warn(ctx: dict[str, Any], reason: str, song_id: int) -> None:
+    if ctx["warn_count"] >= _MAX_HYDRATION_WARNINGS:
+        ctx["warnings_truncated"] = True
+        return
+    ctx["warn_count"] += 1
+    logger.warning(
+        "discovery_hydration_issue",
+        extra={
+            "source": "discovery_home",
+            "stage": "hydration",
+            "reason": reason,
+            "song_id": song_id,
+        },
+    )
+
+
+def _valid_master_audio(asset: SongMediaAsset | None) -> bool:
+    if asset is None:
+        return False
+    fp = asset.file_path
+    if fp is None:
+        return False
+    return bool(str(fp).strip())
+
+
+def _pick_assets(assets: list[SongMediaAsset]) -> tuple[dict[int, SongMediaAsset], dict[int, SongMediaAsset]]:
+    """First asset per (song_id, kind) by minimum ``SongMediaAsset.id`` (deterministic)."""
+    masters: dict[int, SongMediaAsset] = {}
+    covers: dict[int, SongMediaAsset] = {}
+    for a in assets:
+        if a.kind not in (SONG_MEDIA_KIND_MASTER_AUDIO, SONG_MEDIA_KIND_COVER_ART):
+            continue
+        sid = int(a.song_id)
+        bucket = masters if a.kind == SONG_MEDIA_KIND_MASTER_AUDIO else covers
+        cur = bucket.get(sid)
+        if cur is None or int(a.id) < int(cur.id):
+            bucket[sid] = a
+    return masters, covers
+
+
+def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int, dict], bool]:
+    """
+    Two queries (songs+artist, assets). ``hydrate_map`` keys follow ``union_ids`` order when filled.
+
+    Iterate ``for sid in union_ids`` when building the map — never DB row order.
+
+    Returns ``(hydrate_map, hydration_warnings_truncated)`` when warning logs were capped.
+    """
+    ctx: dict[str, Any] = {"warn_count": 0, "warnings_truncated": False}
+    out: dict[int, dict] = {}
+
+    if not union_ids:
+        return out, False
+
+    song_rows = (
+        db.query(Song, Artist.name)
+        .outerjoin(Artist, Song.artist_id == Artist.id)
+        .filter(Song.id.in_(union_ids))
+        .all()
+    )
+    song_by_id: dict[int, tuple[Song, str | None]] = {}
+    for song, artist_name in song_rows:
+        song_by_id[int(song.id)] = (song, artist_name)
+
+    asset_rows = (
+        db.query(SongMediaAsset)
+        .filter(
+            SongMediaAsset.song_id.in_(union_ids),
+            SongMediaAsset.kind.in_(
+                (SONG_MEDIA_KIND_MASTER_AUDIO, SONG_MEDIA_KIND_COVER_ART),
+            ),
+        )
+        .all()
+    )
+    masters, covers = _pick_assets(list(asset_rows))
+
+    for sid in union_ids:
+        tup = song_by_id.get(sid)
+        if tup is None:
+            _warn(ctx, "missing_song", sid)
+            out[sid] = normalize_discovery_track_row(dict(build_placeholder(sid)))
+            continue
+
+        song, artist_name = tup
+        title_raw = song.title
+        title = str(title_raw).strip() if title_raw is not None else ""
+        if not title:
+            title = UNKNOWN_TRACK
+
+        an = (str(artist_name).strip() if artist_name is not None else "") or UNKNOWN_ARTIST
+
+        master = masters.get(sid)
+        cover = covers.get(sid)
+        valid_master = _valid_master_audio(master)
+        upload_ready = str(song.upload_status or "") == "ready"
+        playable = bool(upload_ready and valid_master)
+
+        if upload_ready and not valid_master:
+            _warn(ctx, "ready_without_valid_master", sid)
+
+        # Never expose raw file_path — only public URL helper output.
+        audio_raw = public_media_url_from_stored_path(master.file_path if master else None)
+        cover_raw = public_media_url_from_stored_path(cover.file_path if cover else None)
+
+        row = {
+            "id": sid,
+            "title": title,
+            "artist_name": an,
+            "audio_url": audio_raw,
+            "cover_url": cover_raw,
+            "playable": playable,
+        }
+        out[sid] = normalize_discovery_track_row(row)
+
+    return out, bool(ctx.get("warnings_truncated"))
+
+
+def assemble_discovery_response(
+    sections: dict[str, list[int]],
+    hydrate_map: dict[int, dict],
+    *,
+    context_by_song: dict[int, str | None] | None = None,
+) -> dict[str, list[dict]]:
+    """
+    Section order is the source of truth. Hydration must never reorder items.
+
+    Always appends ``dict(...)`` copies; never reuses the same dict instance.
+    """
+    if __debug__:
+        seen: set[int] = set()
+        for key in _SECTION_KEYS:
+            for sid in sections.get(key) or []:
+                i = int(sid)
+                assert i not in seen, "duplicate song_id across discovery sections"
+                seen.add(i)
+
+    raw: dict[str, list[dict]] = {}
+    for key in _SECTION_KEYS:
+        block: list[dict] = []
+        for sid in sections.get(key) or []:
+            i = int(sid)
+            base = hydrate_map.get(i)
+            if base is None:
+                base = build_placeholder(i)
+            row = dict(base)
+            if context_by_song is not None:
+                row["context_tag"] = context_by_song.get(i)
+            block.append(row)
+        raw[key] = block
+
+    return normalize_discovery_sections_response(raw)
+
+
+def _discovery_home_response_metrics(
+    response: dict[str, list[dict]],
+) -> tuple[int, int, float, float, int]:
+    """
+    Aggregate-safe counts from the final normalized response.
+
+    Returns:
+        total_tracks_returned, unique_tracks, playable_ratio,
+        non_playable_ratio, curated_count
+    """
+    total = 0
+    non_playable = 0
+    seen_ids: set[int] = set()
+    for key in _SECTION_KEYS:
+        for row in response.get(key) or []:
+            total += 1
+            seen_ids.add(int(row["id"]))
+            if row.get("playable") is not True:
+                non_playable += 1
+    unique = len(seen_ids)
+    curated_count = len(response.get("curated") or [])
+    playable_ratio = (total - non_playable) / total if total else 0.0
+    non_playable_ratio = non_playable / total if total else 0.0
+    return total, unique, float(playable_ratio), float(non_playable_ratio), curated_count
+
+
+def _log_discovery_home_observability(
+    response: dict[str, list[dict]],
+    *,
+    anonymous: bool,
+    hydration_warnings_truncated: bool,
+    timings_ms: dict[str, float] | None,
+) -> None:
+    """One INFO summary + optional WARNING for high non-playable ratio (no PII)."""
+    total, unique, playable_ratio, non_playable_ratio, curated_count = _discovery_home_response_metrics(
+        response
+    )
+
+    extra_summary: dict[str, Any] = {
+        "event": "discovery_home",
+        "total_tracks_returned": total,
+        "unique_tracks": unique,
+        "playable_ratio": round(playable_ratio, 4),
+        "curated_count": curated_count,
+        "anonymous": bool(anonymous),
+        "hydration_warnings_truncated": bool(hydration_warnings_truncated),
+    }
+    if timings_ms:
+        for k, v in timings_ms.items():
+            extra_summary[k] = round(float(v), 3) if isinstance(v, (int, float)) else v
+
+    logger.info("discovery_home", extra=extra_summary)
+
+    if total > 0 and non_playable_ratio > 0.5:
+        logger.warning(
+            "discovery_high_non_playable_ratio",
+            extra={
+                "event": "discovery_high_non_playable_ratio",
+                "ratio": round(non_playable_ratio, 4),
+                "total_tracks": total,
+                "anonymous": bool(anonymous),
+            },
+        )
+
+
+def build_discovery_home_sections(
+    db: Session,
+    sections: dict[str, list[int]],
+    *,
+    context_by_song: dict[int, str | None] | None = None,
+    section_microcopy: dict[str, str] | None = None,
+    anonymous: bool = False,
+    timings_ms: dict[str, float] | None = None,
+) -> dict[str, list[dict]]:
+    """Union → hydrate (0 queries if empty) → assemble with strict normalization.
+
+    Emits one structured INFO log per call (and optionally a WARNING for high non-playable ratio).
+    ``anonymous`` / ``timings_ms`` are observability-only; they do not affect the returned payload.
+    """
+    union_ids = build_union_ids(sections)
+    if not union_ids:
+        empty = {k: [] for k in _SECTION_KEYS}
+        response = normalize_discovery_sections_response(empty)
+        if section_microcopy:
+            response["section_microcopy"] = dict(section_microcopy)
+        merged_ms: dict[str, float] = dict(timings_ms or {})
+        merged_ms.setdefault("hydration_ms", 0.0)
+        if "pool_ms" in merged_ms and "ranking_ms" in merged_ms:
+            merged_ms["total_ms"] = round(
+                float(merged_ms["pool_ms"])
+                + float(merged_ms["ranking_ms"])
+                + float(merged_ms["hydration_ms"]),
+                3,
+            )
+        _log_discovery_home_observability(
+            response,
+            anonymous=anonymous,
+            hydration_warnings_truncated=False,
+            timings_ms=merged_ms,
+        )
+        return response
+
+    t_hydrate = time.perf_counter()
+    hydrate_map, warnings_truncated = hydrate_discovery_rows(db, union_ids)
+    response = assemble_discovery_response(
+        sections,
+        hydrate_map,
+        context_by_song=context_by_song,
+    )
+    if section_microcopy:
+        response["section_microcopy"] = dict(section_microcopy)
+    hydration_ms = (time.perf_counter() - t_hydrate) * 1000.0
+
+    merged_ms = dict(timings_ms or {})
+    merged_ms["hydration_ms"] = round(hydration_ms, 3)
+    if "pool_ms" in merged_ms and "ranking_ms" in merged_ms:
+        merged_ms["total_ms"] = round(
+            float(merged_ms["pool_ms"]) + float(merged_ms["ranking_ms"]) + float(merged_ms["hydration_ms"]),
+            3,
+        )
+
+    _log_discovery_home_observability(
+        response,
+        anonymous=anonymous,
+        hydration_warnings_truncated=warnings_truncated,
+        timings_ms=merged_ms,
+    )
+    return response

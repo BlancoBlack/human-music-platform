@@ -114,6 +114,33 @@ export async function searchArtists(
   return res.json();
 }
 
+export type DiscoveryTrack = {
+  id: number;
+  title: string;
+  artist_name: string;
+  audio_url: string | null;
+  cover_url: string | null;
+  playable: boolean;
+  context_tag?: string | null;
+};
+
+export type DiscoveryResponse = {
+  play_now: DiscoveryTrack[];
+  for_you: DiscoveryTrack[];
+  explore: DiscoveryTrack[];
+  curated: DiscoveryTrack[];
+  section_microcopy?: Record<string, string>;
+};
+
+export async function fetchDiscoveryHome(): Promise<DiscoveryResponse> {
+  const res = await apiFetch("/discovery/home");
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to load discovery home");
+  }
+  return res.json();
+}
+
 export type UploadAudioErrorCode =
   | "wav_file_too_large"
   | "master_audio_immutable";

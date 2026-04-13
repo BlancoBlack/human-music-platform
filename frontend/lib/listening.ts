@@ -1,19 +1,10 @@
-import { API_BASE } from "@/lib/publicEnv";
+import { apiFetch } from "@/lib/api";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** MVP: must match a real user row; override via NEXT_PUBLIC_LISTENING_USER_ID */
-export function getListeningUserId(): string {
-  const raw = process.env.NEXT_PUBLIC_LISTENING_USER_ID?.trim();
-  return raw && raw.length > 0 ? raw : "1";
-}
-
-export function listeningHeaders(): HeadersInit {
-  return {
-    "Content-Type": "application/json",
-    "X-User-Id": getListeningUserId(),
-  };
-}
+const jsonHeaders = {
+  "Content-Type": "application/json",
+} as const;
 
 export type StartSessionResponse = { session_id: number };
 
@@ -34,9 +25,9 @@ function coerceStartSessionSongId(songId: number): number {
 
 export async function postStartSession(songId: number): Promise<StartSessionResponse> {
   const song_id = coerceStartSessionSongId(songId);
-  const res = await fetch(`${API_BASE}/stream/start-session`, {
+  const res = await apiFetch("/stream/start-session", {
     method: "POST",
-    headers: listeningHeaders(),
+    headers: jsonHeaders,
     body: JSON.stringify({ song_id }),
   });
   if (!res.ok) {
@@ -58,9 +49,9 @@ export async function postCheckpoint(body: {
   sequence: number;
   position_seconds: number;
 }): Promise<Response> {
-  return fetch(`${API_BASE}/stream/checkpoint`, {
+  return apiFetch("/stream/checkpoint", {
     method: "POST",
-    headers: listeningHeaders(),
+    headers: jsonHeaders,
     body: JSON.stringify(body),
   });
 }
@@ -82,9 +73,9 @@ export async function postFinalize(
   },
   opts?: { keepalive?: boolean },
 ): Promise<Response> {
-  return fetch(`${API_BASE}/stream`, {
+  return apiFetch("/stream", {
     method: "POST",
-    headers: listeningHeaders(),
+    headers: jsonHeaders,
     body: JSON.stringify(body),
     keepalive: opts?.keepalive === true,
   });

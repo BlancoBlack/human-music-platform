@@ -1,9 +1,15 @@
 """
-Seed listening data identically to seed_data.py, then complete the V2 ledger:
+Seed listening data using shared helpers from ``app.seeding.seed_common``.
+
+Creates the small default artist/user/song set, simulates listening events, then
+runs the V2 ledger pipeline:
 
   payout_batch (draft) → build_snapshot → generate_payout_lines
 
 Treasury artist/song are ensured before events (same invariant as parity tests).
+
+There is no separate ``seed_data.py``; this entrypoint relies entirely on
+``seed_common`` utilities.
 """
 from __future__ import annotations
 

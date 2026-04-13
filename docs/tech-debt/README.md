@@ -34,6 +34,7 @@ This folder tracks **intentional deferrals** and **known gaps** from building th
 | [search_scalability.md](./search_scalability.md) | **Deep dive:** artist search implementation, limits, options (Postgres/SQLite/external), upgrade triggers |
 | [auth-and-wallet.md](./auth-and-wallet.md) | **HIGH (future):** Deferred custodial/MPC wallet, KMS, signing isolation; OAuth/Web3Auth; migration from JWT + `Artist.payout_wallet_address` |
 | [auth-system.md](./auth-system.md) | **Auth umbrella:** refresh families / reuse / logout-all, CSRF, email flows, DB email NOT NULL, legacy header removal, frontend session, JWT risks, production checklist |
+| [discovery-advanced-system.md](./discovery-advanced-system.md) | **Discovery future:** advanced ranking blueprint + explicit V1 discovery gaps (metadata, curator system, cultural context, real-time signals, richer personalization) |
 
 ## Priority levels
 

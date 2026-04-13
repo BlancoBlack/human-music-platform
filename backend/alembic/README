@@ -1,0 +1,5 @@
+Alembic migrations for local SQLite (see ../migrations/ for optional raw SQL patches).
+
+Run from the ``backend`` directory with the project venv activated:
+
+    alembic upgrade head

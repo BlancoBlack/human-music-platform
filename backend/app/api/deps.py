@@ -166,3 +166,44 @@ def get_listening_user_id(
         return uid
 
     raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+async def get_optional_user(
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+    db: Annotated[Session, Depends(get_db)],
+) -> User | None:
+    """
+    Optional Bearer auth for read-only surfaces (e.g. discovery).
+
+    - Missing or invalid token → ``None`` (no 401).
+    - Valid token but unknown/inactive user → ``None``.
+    - Valid active user (including impersonation subject) → ``User``.
+
+    Sets ``request.state.impersonation_actor_id`` when the token is impersonation,
+    same as ``resolve_user_from_access_token``, so downstream code can audit.
+    """
+    token = _bearer_token_from_credentials(credentials)
+    if token is None:
+        return None
+    try:
+        payload = decode_access_token(token)
+    except jwt.PyJWTError:
+        return None
+
+    request.state.impersonation_actor_id = None
+    if is_impersonation_token_payload(payload):
+        try:
+            request.state.impersonation_actor_id = int(payload["actor"])
+        except (TypeError, ValueError, KeyError):
+            request.state.impersonation_actor_id = None
+
+    try:
+        user_id = int(payload["sub"])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None or not user.is_active:
+        return None
+    return user

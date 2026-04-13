@@ -38,6 +38,7 @@ from app.models.song_media_asset import (
     SongMediaAsset,
 )
 from app.models.user import User
+from app.services.media_urls import public_media_url_from_stored_path
 from app.services.payout_service import calculate_user_distribution
 from app.services.payout_ledger_ui_service import (
     admin_ledger_group_counts,
@@ -768,14 +769,6 @@ def get_artist(artist_id: int, db=Depends(get_db)):
     return {"id": artist.id, "name": artist.name}
 
 
-def _public_media_url_from_stored_path(file_path: str | None) -> str | None:
-    """Same URL shape as ``cover_url`` / static ``/uploads`` mount in ``GET /songs/{id}``."""
-    if file_path is None or not str(file_path).strip():
-        return None
-    p = str(file_path).replace("\\", "/").lstrip("/")
-    return f"/{p}"
-
-
 @router.get("/artists/{artist_id}/songs")
 def list_artist_songs(
     artist_id: int,
@@ -815,10 +808,10 @@ def list_artist_songs(
         master = master_by_sid.get(sid)
         cover = cover_by_sid.get(sid)
         has_master_audio = master is not None
-        cover_url = _public_media_url_from_stored_path(
+        cover_url = public_media_url_from_stored_path(
             cover.file_path if cover else None,
         )
-        audio_url = _public_media_url_from_stored_path(
+        audio_url = public_media_url_from_stored_path(
             master.file_path if master else None,
         )
         upload_status = str(song.upload_status or "")

@@ -19,6 +19,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from sqlalchemy import text
 from app.api.auth_routes import router as auth_router
+from app.api.discovery_routes import router as discovery_router
 from app.api.routes import router
 from app.core.database import Base, SessionLocal, engine
 from app.core.sqlite_compat import (
@@ -326,6 +327,7 @@ def startup_init() -> None:
 
 # rutas
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
+app.include_router(discovery_router, prefix="/discovery", tags=["discovery"])
 app.include_router(router)
 
 _uploads_dir = Path("uploads")

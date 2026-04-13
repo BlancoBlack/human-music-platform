@@ -106,6 +106,8 @@ All backend and worker commands assume:
 1. **Current working directory is `backend/`** (the folder that contains `app/`, `worker.py`, and `requirements.txt`).
 2. **Interpreter is always `backend/.venv`** — never the system Python, Homebrew `python3`, or a global `uvicorn` on `PATH`.
 
+**Database & schema (single overview):** how models, `create_all`, startup SQLite patches, seeds, Alembic, and `migrations/*.sql` fit together — see **[backend/README.md — Database Architecture](backend/README.md#database-architecture-important)**.
+
 Create the environment once per machine (do not copy `.venv` between computers):
 
 ```bash
@@ -265,6 +267,18 @@ Use the **same** `backend/.venv` as the API: `./.venv/bin/python worker.py` from
 | `./.venv/bin/python scripts/test_distribution_vs_ledger_parity.py` | Distribution vs ledger parity check |
 | `./.venv/bin/python scripts/test_stream_concurrency.py` | Concurrent `/stream` smoke test (API must be running) |
 | `./.venv/bin/python -m pytest tests/` | `backend/tests/` |
+
+## Discovery (current)
+
+- Endpoint: `GET /discovery/home`
+- Pipeline: candidate generation → multi-score ranking → structured/adaptive selection → hydration/normalization.
+- Sections: `play_now`, `for_you`, `explore`, `curated`.
+- Per-track fields: `id`, `title`, `artist_name`, `audio_url`, `cover_url`, `playable`, optional `context_tag`.
+- Optional top-level metadata: `section_microcopy`.
+
+Frontend (`/discovery`) renders section microcopy and context tags when present, with safe fallback when optional fields are missing.
+
+For detailed backend implementation notes and contract context, see [`backend/README.md`](backend/README.md).
 
 **Cursor / VS Code extensions (inferred)**  
 
