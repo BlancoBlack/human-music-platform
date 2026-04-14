@@ -49,23 +49,39 @@ Console-only for critical ingestion paths; catalog may show generic play errors.
 ## Upload flow improvements
 
 **Description**  
-`UploadWizard` and related flows may need clearer states, error mapping, and progress for large masters. Separately, the **metadata model** for supply-side catalog is still MVP-scoped relative to a full rights-aware platform.
+`UploadWizard` serves as both **create** and **edit** flow. Large-master UX (chunked upload, resume) is still MVP-scoped.
 
 **Why it matters**  
-Upload is the supply side of the catalog; friction reduces content. Missing **credits, splits, and rights** fields block label-grade payouts and discovery features later.
+Upload is the supply side of the catalog; friction reduces content.
 
-**Current behavior**  
-- **UX:** Functional MVP; see existing components and API error shapes (`wav_file_too_large`, etc.).  
-- **Metadata captured today (representative):** song title; **featured artists** (by artist id—no percentage split on collaborators); **credits** with roles: musician, mix engineer, mastering engineer, producer, studio (name + role per row).  
-- **Not modeled in upload/API today:** songwriter and label as credit roles; **royalty % splits** for collaborators and non-artist entities; **ownership / rights / publishers**; **genre, subgenre, mood, audio characteristics** (beyond duration from WAV).
+**Current behavior (implemented)**  
+- **Create mode** (`POST /songs`, authenticated + artist-ownership enforced): title, primary artist, featured artists (by artist id), credits (musician, mix engineer, mastering engineer, producer, studio, songwriter, sound designer — name + role per row), genre, subgenre, moods (up to 3), country/city location.  
+- **Edit mode** (wizard with `song_id` param, `PATCH /songs/{id}`): loads and hydrates all metadata. Songs with `upload_status === "ready"` lock title, featured artists, and royalty splits; genre, subgenre, credits, moods, location remain editable.  
+- **Royalty splits** (`PUT /songs/{id}/splits`): percentage splits across artists; `SongArtistSplit` table; locked once song is ready.  
+- **Soft delete** (`DELETE /songs/{id}`): sets `deleted_at`; song disappears from catalog, discovery, and analytics surfaces.  
+- **Ownership model**: `artists.user_id` links artist to auth user; enforced on create, update, delete, and splits.
 
-**Proposed solution**  
-- **UX:** Chunked upload if needed, clearer validation messages, resume failed uploads.  
-- **Data model (pairs with [backend.md](./backend.md) identifiers + credit-role evolution):** extend schema and wizard steps for additional credit types, split tables, rights parties—behind explicit product scope.
+**Remaining gaps**  
+- Chunked upload for large masters (>100 MB WAV).  
+- Rights / publishers / label-as-credit-role not yet modeled.  
+- Media upload endpoints (`upload-audio`, `upload-cover`) lack authentication (ownership not enforced at route layer).
 
 **Priority:** MEDIUM  
 
-**When to address:** **Post-MVP** as catalog grows; schema work sooner if external partners require splits/ISRC before UX polish.
+**When to address:** Media auth before broader beta; chunked upload and rights model post-MVP.
+
+---
+
+## Release scheduling architecture pointer
+
+**Description**  
+Scheduled publishing now uses an MVP polling auto-publish loop (`scheduled` → `published`) in backend worker infrastructure.
+
+**Where to find technical details**  
+See backend tech debt entry: **"Release Auto-Publish Scheduler (Polling-based)"** in [backend.md](./backend.md).
+
+**Why this pointer exists**  
+UX behavior for future-dated releases depends on this backend mechanism and its known limitations (polling delay, single-instance assumptions).
 
 ---
 

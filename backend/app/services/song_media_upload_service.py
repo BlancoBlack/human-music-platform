@@ -13,6 +13,15 @@ from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
 from app.models.artist import Artist
+from app.models.release import (
+    RELEASE_STATE_DRAFT,
+    RELEASE_TYPE_ALBUM,
+    Release,
+)
+from app.models.release_media_asset import (
+    RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+    ReleaseMediaAsset,
+)
 from app.models.song import Song
 from app.models.song_media_asset import (
     SONG_MEDIA_KIND_COVER_ART,
@@ -25,6 +34,7 @@ from app.services.song_ingestion_service import (
     _validate_wav_content_type,
     _validate_wav_filename,
 )
+from app.services.song_state_service import sync_song_state_from_upload_status
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +124,60 @@ def compute_pipeline_upload_status(*, has_master_audio: bool, has_cover_art: boo
     return "draft"
 
 
+def _song_on_album_release(db: Session, song: Song) -> bool:
+    rid = song.release_id
+    if rid is None:
+        return False
+    rel = db.query(Release).filter(Release.id == int(rid)).first()
+    return rel is not None and rel.type == RELEASE_TYPE_ALBUM
+
+
+def _release_has_cover_asset(db: Session, release_id: int) -> bool:
+    return (
+        db.query(ReleaseMediaAsset.id)
+        .filter(
+            ReleaseMediaAsset.release_id == int(release_id),
+            ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+        )
+        .first()
+        is not None
+    )
+
+
+def effective_song_cover_art(db: Session, song: Song) -> tuple[bool, str | None]:
+    """
+    Effective cover for API responses: album releases use ``ReleaseMediaAsset``
+    (COVER_ART) only — no song-level fallback. Singles / non-album use
+    ``SongMediaAsset`` cover.
+    """
+    rid = song.release_id
+    if rid is not None:
+        rel = db.query(Release).filter(Release.id == int(rid)).first()
+        if rel is not None and rel.type == RELEASE_TYPE_ALBUM:
+            row = (
+                db.query(ReleaseMediaAsset)
+                .filter(
+                    ReleaseMediaAsset.release_id == int(rid),
+                    ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+                )
+                .first()
+            )
+            if row is not None and row.file_path and str(row.file_path).strip():
+                return True, str(row.file_path).strip()
+            return False, None
+    row = (
+        db.query(SongMediaAsset)
+        .filter(
+            SongMediaAsset.song_id == int(song.id),
+            SongMediaAsset.kind == SONG_MEDIA_KIND_COVER_ART,
+        )
+        .first()
+    )
+    if row is not None and row.file_path and str(row.file_path).strip():
+        return True, str(row.file_path).strip()
+    return False, None
+
+
 def _kinds_for_song(db: Session, song_id: int) -> set[str]:
     rows = (
         db.query(SongMediaAsset.kind)
@@ -137,10 +201,15 @@ def _master_audio_asset_exists(db: Session, song_id: int) -> bool:
 
 def apply_upload_status_from_assets(db: Session, song: Song) -> None:
     kinds = _kinds_for_song(db, int(song.id))
+    if _song_on_album_release(db, song):
+        has_cover = _release_has_cover_asset(db, int(song.release_id))
+    else:
+        has_cover = SONG_MEDIA_KIND_COVER_ART in kinds
     song.upload_status = compute_pipeline_upload_status(
         has_master_audio=SONG_MEDIA_KIND_MASTER_AUDIO in kinds,
-        has_cover_art=SONG_MEDIA_KIND_COVER_ART in kinds,
+        has_cover_art=has_cover,
     )
+    sync_song_state_from_upload_status(song)
 
 
 def _upsert_asset(
@@ -244,7 +313,11 @@ def upload_song_master_audio(
     original_filename: str | None,
     content_type: str | None,
 ) -> int:
-    song = db.query(Song).filter(Song.id == int(song_id)).first()
+    song = (
+        db.query(Song)
+        .filter(Song.id == int(song_id), Song.deleted_at.is_(None))
+        .first()
+    )
     if song is None:
         raise ValueError(f"Song {song_id} not found.")
 
@@ -323,9 +396,22 @@ def upload_song_cover_art(
     original_filename: str | None,
     content_type: str | None,
 ) -> None:
-    song = db.query(Song).filter(Song.id == int(song_id)).first()
+    song = (
+        db.query(Song)
+        .filter(Song.id == int(song_id), Song.deleted_at.is_(None))
+        .first()
+    )
     if song is None:
         raise ValueError(f"Song {song_id} not found.")
+
+    if song.release_id is not None:
+        rel = db.query(Release).filter(Release.id == int(song.release_id)).first()
+        if rel is not None and rel.type == RELEASE_TYPE_ALBUM:
+            logger.warning(
+                "track_cover_blocked_due_to_album",
+                extra={"song_id": int(song_id), "release_id": int(rel.id)},
+            )
+            raise ValueError("cover_managed_at_release")
 
     mime = _normalize_cover_mime(content_type, original_filename)
     data = _read_upload_bytes(file)
@@ -369,3 +455,85 @@ def upload_song_cover_art(
     )
     db.commit()
     db.refresh(song)
+
+
+def _upsert_release_cover_asset(db: Session, *, release_id: int, file_path: str) -> None:
+    row = (
+        db.query(ReleaseMediaAsset)
+        .filter(
+            ReleaseMediaAsset.release_id == int(release_id),
+            ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+        )
+        .first()
+    )
+    if row is not None:
+        row.file_path = str(file_path).strip()
+        db.add(row)
+    else:
+        db.add(
+            ReleaseMediaAsset(
+                release_id=int(release_id),
+                asset_type=RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+                file_path=str(file_path).strip(),
+            )
+        )
+
+
+def upload_release_cover_art(
+    db: Session,
+    release_id: int,
+    file: Any,
+    *,
+    original_filename: str | None,
+    content_type: str | None,
+) -> None:
+    """
+    Store cover art as ``ReleaseMediaAsset`` (COVER_ART). Same validation and
+    on-disk layout as before (``uploads/releases/``). Does **not** commit; caller
+    owns the transaction.
+    """
+    release = db.query(Release).filter(Release.id == int(release_id)).first()
+    if release is None:
+        raise ValueError(f"Release {release_id} not found.")
+    if release.state != RELEASE_STATE_DRAFT:
+        raise ValueError("Release cover can only be changed while the release is draft.")
+
+    mime = _normalize_cover_mime(content_type, original_filename)
+    data = _read_upload_bytes(file)
+    sniffed = _sniff_image_mime(data)
+    if sniffed is None:
+        raise ValueError("File is not a valid JPEG or PNG image.")
+    if sniffed != mime:
+        raise ValueError("Image bytes do not match declared type (JPEG vs PNG).")
+
+    _validate_cover_dimensions_and_rgb(data)
+
+    digest = bytes_sha256_hex(data)
+    size = len(data)
+    ext = _COVER_MIME_TO_EXT[mime]
+
+    rel = Path("uploads") / "releases" / f"release_{int(release_id)}{ext}"
+    os.makedirs(rel.parent, exist_ok=True)
+    rel.write_bytes(data)
+    rel_str = rel.as_posix()
+
+    _upsert_release_cover_asset(db, release_id=int(release_id), file_path=rel_str)
+    db.flush()
+
+    if release.type == RELEASE_TYPE_ALBUM:
+        for s in (
+            db.query(Song)
+            .filter(Song.release_id == int(release_id), Song.deleted_at.is_(None))
+            .all()
+        ):
+            apply_upload_status_from_assets(db, s)
+            db.add(s)
+
+    logger.info(
+        "release_cover_uploaded",
+        extra={
+            "release_id": int(release_id),
+            "file_size": size,
+            "sha256": digest,
+        },
+    )

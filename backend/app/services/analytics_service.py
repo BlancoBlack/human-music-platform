@@ -357,7 +357,11 @@ def get_artist_streams_over_time(
         if song_id is not None:
             owned_song = (
                 db.query(Song.id)
-                .filter(Song.id == song_id, Song.artist_id == artist_id)
+                .filter(
+                    Song.id == song_id,
+                    Song.artist_id == artist_id,
+                    Song.deleted_at.is_(None),
+                )
                 .first()
             )
             if not owned_song:
@@ -382,6 +386,7 @@ def get_artist_streams_over_time(
             .join(Song, Song.id == ListeningEvent.song_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_utc,
                 ListeningEvent.created_at <= now_utc,
@@ -426,6 +431,7 @@ def get_artist_top_songs(
             .join(Song, Song.id == ListeningEvent.song_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_utc,
                 ListeningEvent.created_at <= now_utc,
@@ -475,6 +481,7 @@ def get_artist_top_fans(
             .join(User, User.id == ListeningEvent.user_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_utc,
                 ListeningEvent.created_at <= now_utc,
@@ -504,6 +511,7 @@ def get_artist_top_fans(
             .join(User, User.id == ListeningEvent.user_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_utc,
                 ListeningEvent.created_at <= now_utc,
@@ -585,7 +593,7 @@ def get_artist_insights(
 
         song_count = (
             db.query(func.count(Song.id))
-            .filter(Song.artist_id == artist_id)
+            .filter(Song.artist_id == artist_id, Song.deleted_at.is_(None))
             .scalar()
         )
         song_count = int(song_count or 0)
@@ -605,6 +613,7 @@ def get_artist_insights(
             .join(Song, Song.id == ListeningEvent.song_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
             )
             .scalar()
@@ -627,6 +636,7 @@ def get_artist_insights(
             .join(Song, Song.id == ListeningEvent.song_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_utc,
                 ListeningEvent.created_at <= now_utc,
@@ -650,6 +660,7 @@ def get_artist_insights(
             .join(Song, Song.id == ListeningEvent.song_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
             )
             .group_by(ListeningEvent.user_id)
@@ -677,6 +688,7 @@ def get_artist_insights(
             .join(Song, Song.id == ListeningEvent.song_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
             )
             .group_by(ListeningEvent.user_id, Song.id)
@@ -711,6 +723,7 @@ def get_artist_insights(
             .join(User, User.id == ListeningEvent.user_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_utc,
                 ListeningEvent.created_at <= now_utc,
@@ -754,6 +767,7 @@ def get_artist_insights(
             .join(User, User.id == ListeningEvent.user_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_week,
                 ListeningEvent.created_at <= now_week,
@@ -786,6 +800,7 @@ def get_artist_insights(
             .join(Song, Song.id == ListeningEvent.song_id)
             .filter(
                 Song.artist_id == artist_id,
+                Song.deleted_at.is_(None),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_30,
                 ListeningEvent.created_at <= now_30,

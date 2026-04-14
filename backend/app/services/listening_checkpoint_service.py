@@ -42,7 +42,12 @@ def process_start_listening_session(
     song_id: int,
 ) -> Dict[str, Any]:
     """Create a listening session bound to one song (hybrid player)."""
-    if db.query(Song.id).filter(Song.id == song_id).first() is None:
+    if (
+        db.query(Song.id)
+        .filter(Song.id == song_id, Song.deleted_at.is_(None))
+        .first()
+        is None
+    ):
         raise HTTPException(status_code=404, detail="Song not found")
     if db.query(User.id).filter(User.id == user_id).first() is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -80,7 +85,12 @@ def process_stream_checkpoint(
     if position_seconds < 0:
         raise HTTPException(status_code=400, detail="position_seconds must be >= 0")
 
-    if db.query(Song.id).filter(Song.id == song_id).first() is None:
+    if (
+        db.query(Song.id)
+        .filter(Song.id == song_id, Song.deleted_at.is_(None))
+        .first()
+        is None
+    ):
         raise HTTPException(status_code=404, detail="Song not found")
 
     session = (

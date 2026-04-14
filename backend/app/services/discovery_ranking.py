@@ -6,6 +6,7 @@ Scoring uses only in-memory dicts/lists — no database access.
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 from datetime import datetime
@@ -21,12 +22,14 @@ from app.models.global_listening_aggregate import GlobalListeningAggregate
 from app.models.listening_aggregate import ListeningAggregate
 from app.models.song import Song
 from app.services.discovery_candidate_pools import (
+    get_discovery_visibility_stats,
     get_low_exposure_candidates,
     get_popular_candidates,
     get_user_candidates,
 )
 
 _MAX_CANDIDATES = 500
+logger = logging.getLogger(__name__)
 
 # Authenticated: blend relevance, discovery (1 − normalized pop), and popularity.
 _WEIGHT_AUTH_REL = 0.45
@@ -118,7 +121,7 @@ def load_song_metadata(
         return {}, {}
     rows = (
         db.query(Song.id, Song.artist_id, Song.created_at)
-        .filter(Song.id.in_(candidate_ids))
+        .filter(Song.id.in_(candidate_ids), Song.deleted_at.is_(None))
         .all()
     )
     now = datetime.utcnow()
@@ -148,6 +151,7 @@ def load_user_listened_artists(db: Session, user_id: int | None) -> set[int]:
             ListeningAggregate.user_id == int(user_id),
             ListeningAggregate.total_duration > 0,
             Song.artist_id.isnot(None),
+            Song.deleted_at.is_(None),
         )
         .distinct()
         .all()
@@ -174,6 +178,14 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
     popular = get_popular_candidates(db)
     user_pool = get_user_candidates(db, user_id)
     low_exposure = get_low_exposure_candidates(db)
+    visibility_stats = get_discovery_visibility_stats(db)
+    logger.info(
+        "discovery_visibility_snapshot",
+        extra={
+            "user_id": int(user_id) if user_id is not None else None,
+            **visibility_stats,
+        },
+    )
 
     seen: set[int] = set()
     candidate_ids: list[int] = []

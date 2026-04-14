@@ -2,10 +2,17 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { AlbumUploadFlow } from "@/components/album/AlbumUploadFlow";
 import { ArtistHubNav } from "@/components/ArtistHubNav";
 import { AuthGuard } from "@/components/AuthGuard";
 import { UploadWizard } from "@/components/UploadWizard";
-import { API_BASE, fetchArtist, fetchSong } from "@/lib/api";
+import {
+  API_BASE,
+  ApiNotFoundError,
+  deleteSong,
+  fetchArtist,
+  fetchSong,
+} from "@/lib/api";
 
 const UPLOAD_WIZARD_SONG_STORAGE_KEY = "uploadWizardSongId";
 
@@ -15,8 +22,14 @@ function ArtistUploadInner() {
   const raw = searchParams.get("artist_id");
   const aid = raw ? parseInt(raw, 10) : NaN;
   const artistValid = Number.isFinite(aid) && aid > 0;
-  const idParam = searchParams.get("id");
-  const hasIdInUrl = idParam != null && idParam.trim() !== "";
+  const flow = searchParams.get("flow");
+  const flowSingle = flow === "single";
+  const flowAlbum = flow === "album";
+  const idParam =
+    searchParams.get("id") ?? searchParams.get("song_id") ?? undefined;
+  const hasIdInUrl =
+    idParam != null && String(idParam).trim() !== "";
+  const forceSingleWizard = hasIdInUrl || flowSingle;
 
   const [showResumePrompt, setShowResumePrompt] = useState(false);
   const [resumeSongId, setResumeSongId] = useState<number | null>(null);
@@ -24,6 +37,9 @@ function ArtistUploadInner() {
     null,
   );
   const [headerArtistName, setHeaderArtistName] = useState<string | null>(null);
+  const [startNewError, setStartNewError] = useState<string | null>(null);
+  const [startNewBusy, setStartNewBusy] = useState(false);
+  const hasResumeState = showResumePrompt && resumeSongId != null;
 
   useEffect(() => {
     if (!artistValid) {
@@ -76,13 +92,40 @@ function ArtistUploadInner() {
       .then((song) => {
         if (!cancelled) setResumeUploadStatus(song.upload_status);
       })
-      .catch(() => {
-        if (!cancelled) setResumeUploadStatus(null);
+      .catch((e) => {
+        if (cancelled) return;
+        if (e instanceof ApiNotFoundError) {
+          localStorage.removeItem(UPLOAD_WIZARD_SONG_STORAGE_KEY);
+          setResumeSongId(null);
+          setShowResumePrompt(false);
+          setResumeUploadStatus(null);
+          return;
+        }
+        setResumeUploadStatus("");
       });
     return () => {
       cancelled = true;
     };
   }, [showResumePrompt, resumeSongId]);
+
+  const attemptDeleteAndRestart = () => {
+    if (resumeSongId == null) return;
+    setStartNewError(null);
+    setStartNewBusy(true);
+    void deleteSong(resumeSongId)
+      .then(() => {
+        localStorage.removeItem(UPLOAD_WIZARD_SONG_STORAGE_KEY);
+        router.replace(`/artist-upload?artist_id=${aid}`);
+      })
+      .catch((e) => {
+        setStartNewError(
+          e instanceof Error ? e.message : "Could not delete the song. Try again.",
+        );
+      })
+      .finally(() => {
+        setStartNewBusy(false);
+      });
+  };
 
   if (!artistValid) {
     return (
@@ -119,11 +162,125 @@ function ArtistUploadInner() {
     );
   }
 
-  return (
-    <>
-      {showResumePrompt && resumeSongId != null && (
+  if (!forceSingleWizard && !flowAlbum) {
+    return (
+      <main className="mx-auto max-w-2xl px-4 py-10">
+        <ArtistHubNav artistId={aid} active="upload" />
         <div
-          className="mx-auto max-w-2xl px-4 pt-10"
+          className="mt-3 mb-8 text-sm text-neutral-600 dark:text-neutral-400"
+          aria-live="polite"
+        >
+          <p>
+            Uploading as:{" "}
+            {headerArtistName != null ? (
+              <span className="font-medium text-neutral-800 dark:text-neutral-200">
+                {headerArtistName}
+              </span>
+            ) : (
+              <>
+                Artist{" "}
+                <span className="font-mono font-medium tabular-nums text-neutral-800 dark:text-neutral-200">
+                  {aid}
+                </span>
+              </>
+            )}
+          </p>
+        </div>
+        <h1 className="mb-2 text-2xl font-semibold tracking-tight">New upload</h1>
+        <p className="mb-8 text-sm text-neutral-600 dark:text-neutral-400">
+          Choose whether you are uploading a standalone single or an album.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <button
+            type="button"
+            className="rounded-xl border border-neutral-200 bg-white p-6 text-left shadow-sm transition hover:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-950 dark:hover:border-neutral-600"
+            onClick={() => {
+              router.push(`/artist-upload?artist_id=${aid}&flow=single`);
+            }}
+          >
+            <span className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+              Single
+            </span>
+            <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+              One track with its own cover and metadata (existing upload flow).
+            </p>
+          </button>
+          <button
+            type="button"
+            className="rounded-xl border border-neutral-200 bg-white p-6 text-left shadow-sm transition hover:border-neutral-400 dark:border-neutral-800 dark:bg-neutral-950 dark:hover:border-neutral-600"
+            onClick={() => {
+              router.push(`/artist-upload?artist_id=${aid}&flow=album`);
+            }}
+          >
+            <span className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+              Album
+            </span>
+            <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+              Create a release, one cover for all tracks, then add each track.
+            </p>
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (flowAlbum) {
+    return (
+      <>
+        <ArtistHubNav artistId={aid} active="upload" />
+        <div
+          className="mx-auto max-w-2xl px-4 pt-3 text-sm text-neutral-600 dark:text-neutral-400"
+          aria-live="polite"
+        >
+          <p>
+            Uploading as:{" "}
+            {headerArtistName != null ? (
+              <span className="font-medium text-neutral-800 dark:text-neutral-200">
+                {headerArtistName}
+              </span>
+            ) : (
+              <span className="font-mono font-medium tabular-nums text-neutral-800 dark:text-neutral-200">
+                {aid}
+              </span>
+            )}
+          </p>
+        </div>
+        <AlbumUploadFlow artistId={aid} />
+      </>
+    );
+  }
+
+  if (hasResumeState) {
+    return (
+      <>
+        <ArtistHubNav artistId={aid} active="upload" />
+        <div
+          className="mx-auto max-w-2xl px-4 pt-3 text-sm text-neutral-600 dark:text-neutral-400"
+          aria-live="polite"
+        >
+          <p>
+            Uploading as:{" "}
+            {headerArtistName != null ? (
+              <span className="font-medium text-neutral-800 dark:text-neutral-200">
+                {headerArtistName}
+              </span>
+            ) : (
+              <>
+                Artist{" "}
+                <span className="font-mono font-medium tabular-nums text-neutral-800 dark:text-neutral-200">
+                  {aid}
+                </span>
+              </>
+            )}
+          </p>
+          {headerArtistName != null && (
+            <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-500">
+              (ID {aid})
+            </p>
+          )}
+        </div>
+        <div
+          className="mx-auto max-w-2xl px-4 pt-6"
           role="region"
           aria-label="Resume previous upload"
         >
@@ -145,32 +302,46 @@ function ArtistUploadInner() {
                 </span>
               </p>
             )}
+            {startNewError != null && (
+              <div
+                className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100"
+                role="alert"
+              >
+                <p>Delete failed. Retry or continue editing existing draft.</p>
+                <p className="mt-1 text-xs opacity-80">{startNewError}</p>
+              </div>
+            )}
             <div className="mt-4 flex flex-wrap gap-3">
               <button
                 type="button"
                 className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
                 onClick={() => {
-                  router.push(
-                    `/artist-upload?artist_id=${aid}&id=${resumeSongId}`,
-                  );
+                  router.push(`/artist-upload?artist_id=${aid}&id=${resumeSongId}`);
                 }}
               >
-                Continue
+                Continue upload
               </button>
               <button
                 type="button"
-                className="rounded-lg border border-neutral-300 bg-white px-4 py-2 text-sm font-medium text-neutral-800 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100"
-                onClick={() => {
-                  localStorage.removeItem(UPLOAD_WIZARD_SONG_STORAGE_KEY);
-                  window.location.href = `/artist-upload?artist_id=${aid}`;
-                }}
+                disabled={startNewBusy}
+                className="rounded-lg border border-neutral-300 bg-white px-4 py-2 text-sm font-medium text-neutral-800 disabled:opacity-60 dark:border-neutral-600 dark:bg-neutral-950 dark:text-neutral-100"
+                onClick={attemptDeleteAndRestart}
               >
-                Start new
+                {startNewBusy
+                  ? "Deleting…"
+                  : startNewError != null
+                    ? "Retry delete"
+                    : "Start new"}
               </button>
             </div>
           </div>
         </div>
-      )}
+      </>
+    );
+  }
+
+  return (
+    <>
       <UploadWizard
         basePath="/artist-upload"
         fixedArtistId={aid}

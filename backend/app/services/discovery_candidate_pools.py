@@ -8,13 +8,15 @@ All pools are restricted to the same playable universe as catalog/streaming APIs
 from __future__ import annotations
 
 import random
+from datetime import UTC, datetime
 from typing import Sequence
 
-from sqlalchemy import asc, desc, func
+from sqlalchemy import and_, asc, desc, func, or_
 from sqlalchemy.orm import Session
 
 from app.models.global_listening_aggregate import GlobalListeningAggregate
 from app.models.listening_aggregate import ListeningAggregate
+from app.models.release import RELEASE_STATE_PUBLISHED, Release
 from app.models.song import Song
 from app.models.song_media_asset import (
     SONG_MEDIA_KIND_MASTER_AUDIO,
@@ -27,6 +29,54 @@ _LOW_EXPOSURE_LIMIT = 200
 _RANDOM_CAP = 500
 
 
+def _utc_now_naive() -> datetime:
+    # DB columns are currently naive datetimes in local dev.
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _release_visible_sql(now: datetime):
+    return and_(
+        Song.release_id.isnot(None),
+        Release.id.isnot(None),
+        Release.state == RELEASE_STATE_PUBLISHED,
+        Release.discoverable_at.isnot(None),
+        Release.discoverable_at <= now,
+    )
+
+
+def _song_discoverable_sql(now: datetime):
+    # Legacy songs without release_id stay discoverable via upload_status="ready".
+    return and_(
+        Song.deleted_at.is_(None),
+        Song.upload_status == "ready",
+        or_(Song.release_id.is_(None), _release_visible_sql(now)),
+    )
+
+
+def get_discovery_visibility_stats(db: Session) -> dict[str, int]:
+    now = _utc_now_naive()
+    base = (
+        db.query(Song.id, Song.release_id, Release.id.label("release_row_id"))
+        .join(
+            SongMediaAsset,
+            (SongMediaAsset.song_id == Song.id)
+            & (SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO),
+        )
+        .outerjoin(Release, Release.id == Song.release_id)
+        .filter(Song.upload_status == "ready", Song.deleted_at.is_(None))
+    )
+    songs_with_release = int(base.filter(Song.release_id.isnot(None)).count() or 0)
+    songs_without_release = int(base.filter(Song.release_id.is_(None)).count() or 0)
+    filtered_by_release_gating = int(
+        base.filter(Song.release_id.isnot(None), ~_release_visible_sql(now)).count() or 0
+    )
+    return {
+        "songs_with_release": songs_with_release,
+        "songs_without_release": songs_without_release,
+        "songs_filtered_by_release_gating": filtered_by_release_gating,
+    }
+
+
 def get_popular_candidates(db: Session) -> list[int]:
     """
     Popular pool: global validated listening mass, newest playable ties irrelevant.
@@ -36,9 +86,11 @@ def get_popular_candidates(db: Session) -> list[int]:
 
     ``Song.id ASC`` final tie-break ensures stable ordering when durations match.
     """
+    now = _utc_now_naive()
     rows = (
         db.query(GlobalListeningAggregate.song_id)
         .join(Song, Song.id == GlobalListeningAggregate.song_id)
+        .outerjoin(Release, Release.id == Song.release_id)
         .join(
             SongMediaAsset,
             (SongMediaAsset.song_id == Song.id)
@@ -46,7 +98,7 @@ def get_popular_candidates(db: Session) -> list[int]:
         )
         .filter(
             GlobalListeningAggregate.song_id.isnot(None),
-            Song.upload_status == "ready",
+            _song_discoverable_sql(now),
         )
         .order_by(desc(GlobalListeningAggregate.total_duration), Song.id.asc())
         .limit(_POPULAR_LIMIT)
@@ -66,9 +118,11 @@ def get_user_candidates(db: Session, user_id: int | None) -> list[int]:
     if user_id is None:
         return []
 
+    now = _utc_now_naive()
     rows = (
         db.query(ListeningAggregate.song_id)
         .join(Song, Song.id == ListeningAggregate.song_id)
+        .outerjoin(Release, Release.id == Song.release_id)
         .join(
             SongMediaAsset,
             (SongMediaAsset.song_id == Song.id)
@@ -77,7 +131,7 @@ def get_user_candidates(db: Session, user_id: int | None) -> list[int]:
         .filter(
             ListeningAggregate.user_id == int(user_id),
             ListeningAggregate.song_id.isnot(None),
-            Song.upload_status == "ready",
+            _song_discoverable_sql(now),
         )
         .order_by(desc(ListeningAggregate.total_duration), Song.id.asc())
         .limit(_USER_CANDIDATES_LIMIT)
@@ -95,6 +149,7 @@ def get_low_exposure_candidates(db: Session) -> list[int]:
     ``Song.id ASC`` final tie-break ensures stable ordering when exposure and
     ``created_at`` match.
     """
+    now = _utc_now_naive()
     duration_coalesce = func.coalesce(GlobalListeningAggregate.total_duration, 0)
 
     rows = (
@@ -103,12 +158,13 @@ def get_low_exposure_candidates(db: Session) -> list[int]:
             GlobalListeningAggregate,
             GlobalListeningAggregate.song_id == Song.id,
         )
+        .outerjoin(Release, Release.id == Song.release_id)
         .join(
             SongMediaAsset,
             (SongMediaAsset.song_id == Song.id)
             & (SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO),
         )
-        .filter(Song.upload_status == "ready")
+        .filter(_song_discoverable_sql(now))
         .order_by(asc(duration_coalesce), desc(Song.created_at), Song.id.asc())
         .limit(_LOW_EXPOSURE_LIMIT)
         .all()

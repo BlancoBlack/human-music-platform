@@ -2,7 +2,6 @@ import logging
 import time
 import uuid
 from datetime import datetime
-from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import HTTPException
@@ -291,8 +290,14 @@ class StreamService:
             db.add(session)
             db.flush()
 
-        song = db.query(Song).filter(Song.id == song_id).first()
-        song_for_validation = song if song is not None else SimpleNamespace(id=song_id)
+        song = (
+            db.query(Song)
+            .filter(Song.id == song_id, Song.deleted_at.is_(None))
+            .first()
+        )
+        if song is None:
+            raise HTTPException(status_code=404, detail="Song not found")
+        song_for_validation = song
         now_utc = datetime.utcnow()
         validation = validate_listen(
             user_id=user_id,

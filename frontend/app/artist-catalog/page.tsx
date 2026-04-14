@@ -8,6 +8,7 @@ import { AuthGuard } from "@/components/AuthGuard";
 import { useAudioPlayer } from "@/components/audio/AudioPlayerProvider";
 import {
   API_BASE,
+  deleteSong,
   fetchArtistSongs,
   type ArtistCatalogSong,
 } from "@/lib/api";
@@ -78,12 +79,15 @@ function CoverPlaceholder() {
 const uploadBaseHref = (artistId: number) =>
   `/artist-upload?artist_id=${artistId}`;
 
+const uploadWizardHref = (artistId: number, songId: number) =>
+  `/artist-upload?artist_id=${artistId}&id=${songId}`;
+
 function catalogContinueAction(
   song: ArtistCatalogSong,
   artistId: number,
 ): { label: string; href: string } | null {
   if (song.playable) return null;
-  const href = uploadBaseHref(artistId);
+  const href = uploadWizardHref(artistId, song.id);
   switch (song.upload_status) {
     case "draft":
       return { label: "Continue upload", href };
@@ -124,6 +128,10 @@ function ArtistCatalogInner() {
   const [songs, setSongs] = useState<ArtistCatalogSong[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [playError, setPlayError] = useState<string | null>(null);
+  const [deleteBusyId, setDeleteBusyId] = useState<number | null>(null);
+  const [catalogActionError, setCatalogActionError] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     if (!artistValid) {
@@ -246,6 +254,15 @@ function ArtistCatalogInner() {
         </p>
       )}
 
+      {catalogActionError && (
+        <p
+          className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100"
+          role="alert"
+        >
+          {catalogActionError}
+        </p>
+      )}
+
       {songs === null && loadError == null && (
         <p className="text-sm text-neutral-500 dark:text-neutral-400">
           Loading…
@@ -332,6 +349,50 @@ function ArtistCatalogInner() {
                             {continueAction.label}
                           </Link>
                         )}
+                        <Link
+                          href={uploadWizardHref(aid, song.id)}
+                          className="inline-flex cursor-pointer items-center rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-xs font-medium text-neutral-800 shadow-sm transition hover:bg-neutral-50 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100 dark:hover:bg-neutral-700"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          Edit
+                        </Link>
+                        <button
+                          type="button"
+                          disabled={deleteBusyId === song.id}
+                          className="inline-flex cursor-pointer items-center rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-800 shadow-sm transition hover:bg-red-50 disabled:opacity-60 dark:border-red-900 dark:bg-neutral-900 dark:text-red-200 dark:hover:bg-red-950/40"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCatalogActionError(null);
+                            if (
+                              !window.confirm(
+                                "Are you sure you want to delete this song? This cannot be undone.",
+                              )
+                            ) {
+                              return;
+                            }
+                            setDeleteBusyId(song.id);
+                            void deleteSong(song.id)
+                              .then(() => {
+                                setSongs((prev) =>
+                                  prev != null
+                                    ? prev.filter((s) => s.id !== song.id)
+                                    : prev,
+                                );
+                              })
+                              .catch((err) => {
+                                setCatalogActionError(
+                                  err instanceof Error
+                                    ? err.message
+                                    : "Delete failed.",
+                                );
+                              })
+                              .finally(() => {
+                                setDeleteBusyId(null);
+                              });
+                          }}
+                        >
+                          {deleteBusyId === song.id ? "Deleting…" : "Delete"}
+                        </button>
                       </p>
                     </div>
                     {song.playable && (

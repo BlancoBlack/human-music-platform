@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.models.artist import Artist
 from app.models.song import Song
+from app.services.release_service import bind_song_to_release, create_single_release_for_song
 from app.services.song_artist_split_service import set_splits_for_song
+from app.services.song_state_service import sync_song_state_from_upload_status
 
 
 _ALLOWED_WAV_CONTENT_TYPES = frozenset(
@@ -117,6 +119,7 @@ class SongIngestionService:
         title: str,
         splits: list | None,
         file: Any,
+        release_id: int | None = None,
         *,
         original_filename: str | None = None,
         content_type: str | None = None,
@@ -147,7 +150,13 @@ class SongIngestionService:
             title=cleaned_title,
             upload_status="draft",
         )
+        sync_song_state_from_upload_status(song)
         db.add(song)
+        db.flush()
+        if release_id is not None:
+            bind_song_to_release(db, song=song, release_id=int(release_id))
+        else:
+            create_single_release_for_song(db, song=song)
         db.commit()
         db.refresh(song)
 
@@ -161,6 +170,7 @@ class SongIngestionService:
 
         song.file_path = str(target_path)
         song.upload_status = "uploaded"
+        sync_song_state_from_upload_status(song)
         db.add(song)
         db.commit()
         db.refresh(song)
@@ -177,6 +187,7 @@ class SongIngestionService:
 
         song.duration_seconds = duration_seconds
         song.upload_status = "published"
+        sync_song_state_from_upload_status(song)
         db.add(song)
         db.commit()
         db.refresh(song)

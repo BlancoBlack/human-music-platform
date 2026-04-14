@@ -79,11 +79,15 @@ def set_splits_for_song(
     db: Session,
     song_id: int,
     splits: Sequence[Mapping[str, Any]],
+    *,
+    commit: bool = True,
 ) -> list[SongArtistSplit]:
     """
     Replace all splits for ``song_id`` with ``splits`` (validated, then saved).
 
     ``splits`` is a sequence of dict-like rows: ``{"artist_id": int, "share": float}``.
+
+    When ``commit`` is False, callers must commit the session (e.g. outer service).
 
     Raises:
         SplitValidationError: If invariants fail.
@@ -91,7 +95,11 @@ def set_splits_for_song(
     """
     validate_song_splits(splits)
 
-    song = db.query(Song).filter_by(id=song_id).first()
+    song = (
+        db.query(Song)
+        .filter(Song.id == int(song_id), Song.deleted_at.is_(None))
+        .first()
+    )
     if not song:
         raise ValueError(f"Song {song_id} not found.")
 
@@ -116,7 +124,10 @@ def set_splits_for_song(
         db.add(entity)
         created.append(entity)
 
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     for entity in created:
         db.refresh(entity)
     return created

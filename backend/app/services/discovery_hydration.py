@@ -117,7 +117,7 @@ def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int,
     song_rows = (
         db.query(Song, Artist.name)
         .outerjoin(Artist, Song.artist_id == Artist.id)
-        .filter(Song.id.in_(union_ids))
+        .filter(Song.id.in_(union_ids), Song.deleted_at.is_(None))
         .all()
     )
     song_by_id: dict[int, tuple[Song, str | None]] = {}

@@ -109,6 +109,23 @@ Implement `FOR UPDATE` or advisory locks as spec’d in `stream_service.py` TODO
 
 ---
 
+## Analytics consistency rules (soft delete)
+
+**Description**  
+User-facing analytics queries must exclude soft-deleted songs (`Song.deleted_at IS NOT NULL`) so that catalog, discovery, and analytics surfaces stay aligned. Financial/payout queries must **not** filter `deleted_at`.
+
+**Current behavior (implemented)**  
+- `analytics_service.py`: all user-facing functions (`get_artist_streams_over_time`, `get_artist_top_songs`, `get_artist_top_fans`, `get_artist_insights`) join `Song` with `Song.deleted_at.is_(None)`.
+- Discovery, catalog, streaming, and listening services also filter `deleted_at`.
+- Payout services (`payout_service`, `snapshot_service`, `settlement_worker`) do **not** filter and must remain unmodified.
+
+**Rule for new queries**  
+Any new query that surfaces song data to users must include `Song.deleted_at.is_(None)`. Financial/audit queries must not.
+
+**Priority:** N/A (implemented; maintain as invariant)
+
+---
+
 ## Credit roles: `CHECK (role IN (...))` vs normalized `credit_roles` / enum
 
 **Description**  
@@ -118,7 +135,7 @@ Implement `FOR UPDATE` or advisory locks as spec’d in `stream_service.py` TODO
 Long-term catalog and royalty metadata will need **more credit types** and possibly **non-artist parties**; a single string column + widening `CHECK` becomes brittle.
 
 **Current behavior**  
-Fixed set: musician, mix engineer, mastering engineer, producer, studio—enforced at DB + API + frontend.
+Fixed set: musician, mix_engineer, mastering_engineer, producer, studio, songwriter, sound_designer — enforced at DB `CHECK` + API `CREDIT_ROLE_VALUES` + frontend `CREDIT_ROLES`.
 
 **Proposed solution**  
 - Postgres: native `ENUM` or lookup table `credit_roles` with FK.  
@@ -148,3 +165,30 @@ Internal surrogate keys only; identifiers are not assigned at end of upload.
 **Priority:** MEDIUM (HIGH when entering label/PRO integrations)
 
 **When to address:** After core upload + economics stability; before external registry or chain proofs depend on them.
+
+---
+
+## Release Auto-Publish Scheduler (Polling-based)
+
+**Current implementation**  
+Release scheduling uses a polling loop inside `backend/worker.py`:
+- interval-based execution (env: `RELEASE_AUTO_PUBLISH_INTERVAL_SECONDS`, default 45s)
+- calls `publish_due_releases(db)` in `app/services/release_service.py`
+- query + update rule: `state='scheduled' AND discoverable_at <= now` -> `state='published'`
+
+**Problems**  
+- Not real-time: publish delay can be up to polling interval.
+- Inefficient polling: wakes and queries even when no releases are due.
+- Not safe for multi-worker / multi-instance deployment without coordination.
+- No distributed locking / leader election for exactly-once scheduler semantics.
+
+**Future solution**  
+Replace in-process polling with one of:
+- single-instance cron job
+- distributed scheduled jobs (RQ/Celery scheduler)
+- event-driven scheduler component
+
+**Migration path**  
+- Keep `publish_due_releases` as the idempotent core transition function (already satisfied).
+- Extract invocation into standalone scheduled job runner.
+- Disable in-worker polling loop once scheduler job is active.

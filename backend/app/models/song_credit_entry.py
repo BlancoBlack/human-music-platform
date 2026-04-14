@@ -5,10 +5,15 @@ from app.core.database import Base
 
 # Stored values must match API / CHECK below (human-readable roles).
 CREDIT_ROLE_VALUES = (
+    "songwriter",
+    "composer",
+    "arranger",
+    "producer",
     "musician",
+    "sound designer",
     "mix engineer",
     "mastering engineer",
-    "producer",
+    "artwork",
     "studio",
 )
 _CREDIT_ROLE_IN_CLAUSE = ", ".join(repr(v) for v in CREDIT_ROLE_VALUES)

@@ -2,6 +2,9 @@ import logging
 import os
 from pathlib import Path
 
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
 from dotenv import load_dotenv
 
 # Load backend/.env regardless of process cwd (uvicorn/IDE often start from repo root).
@@ -17,15 +20,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from sqlalchemy import text
+from sqlalchemy import inspect, text
+from sqlalchemy.engine.url import make_url
 from app.api.auth_routes import router as auth_router
 from app.api.discovery_routes import router as discovery_router
 from app.api.routes import router
-from app.core.database import Base, SessionLocal, engine
+from app.core.database import Base, DB_PATH, SessionLocal, engine
 from app.core.sqlite_compat import (
     ensure_auth_user_schema,
     ensure_refresh_token_schema,
     ensure_song_credit_entries_position_column,
+    ensure_song_deleted_at_column,
 )
 from app.services.payout_service import ensure_treasury_entities, get_treasury_artist, get_treasury_song
 
@@ -111,6 +116,97 @@ def _sqlite_trigger_exists(conn, trigger_name: str) -> bool:
         {"n": trigger_name},
     ).fetchone()
     return row is not None
+
+
+def _env_truthy(name: str, default: str = "false") -> bool:
+    raw = os.getenv(name, default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _schema_bootstrap_enabled() -> bool:
+    """
+    Explicit escape hatch for isolated local bootstrap only.
+    Never enabled by default.
+    """
+    return _env_truthy("ALLOW_SCHEMA_BOOTSTRAP", "false")
+
+
+def _is_development_env() -> bool:
+    env = (os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
+    return env in {"dev", "development"}
+
+
+def _alembic_config() -> AlembicConfig:
+    return AlembicConfig(str(_BACKEND_ROOT / "alembic.ini"))
+
+
+def _alembic_head_revision() -> str:
+    cfg = _alembic_config()
+    script = ScriptDirectory.from_config(cfg)
+    heads = list(script.get_heads())
+    if len(heads) != 1:
+        raise RuntimeError(
+            f"Expected exactly one Alembic head revision, got: {heads}"
+        )
+    return str(heads[0])
+
+
+def _attempt_dev_auto_migration() -> None:
+    if not _is_development_env():
+        return
+    logger.info("development_auto_migration_start", extra={"target": "head"})
+    try:
+        cfg = _alembic_config()
+        # Prevent Alembic env.py from reconfiguring global logging inside app startup.
+        cfg.attributes["skip_logging_config"] = True
+        alembic_command.upgrade(cfg, "head")
+    except Exception as exc:
+        logger.exception("development_auto_migration_failed")
+        raise RuntimeError(
+            "Automatic Alembic migration failed in development environment. "
+            "Run: `cd backend && .venv/bin/alembic upgrade head` and retry."
+        ) from exc
+    logger.info("development_auto_migration_succeeded", extra={"target": "head"})
+
+
+def _current_alembic_revisions(conn) -> list[str]:
+    insp = inspect(conn)
+    if not insp.has_table("alembic_version"):
+        return []
+    rows = conn.execute(text("SELECT version_num FROM alembic_version")).fetchall()
+    return [str(r[0]) for r in rows if r and r[0] is not None]
+
+
+def _assert_schema_is_current() -> None:
+    head = _alembic_head_revision()
+    with engine.connect() as conn:
+        revisions = _current_alembic_revisions(conn)
+    if not revisions:
+        raise RuntimeError(
+            "Database schema is not initialized by Alembic. "
+            "Run: `cd backend && .venv/bin/alembic upgrade head`"
+        )
+    if len(revisions) != 1 or revisions[0] != head:
+        raise RuntimeError(
+            "Database schema is outdated. "
+            f"Current alembic revision(s): {revisions}; head: {head}. "
+            "Run: `cd backend && .venv/bin/alembic upgrade head`"
+        )
+
+
+def _sanitized_database_url(raw_url: str) -> str:
+    """
+    Mask username/password for safe logging on non-SQLite databases.
+    """
+    try:
+        url = make_url(raw_url)
+    except Exception:
+        return "<redacted>"
+    if url.username is not None:
+        url = url.set(username="****")
+    if url.password is not None:
+        url = url.set(password="****")
+    return url.render_as_string(hide_password=False)
 
 
 def _ensure_listening_session_hybrid_schema() -> None:
@@ -304,17 +400,32 @@ def startup_init() -> None:
             "APP_ENV": os.getenv("APP_ENV"),
             "ENV": os.getenv("ENV"),
             "ENABLE_DEV_ENDPOINTS": os.getenv("ENABLE_DEV_ENDPOINTS"),
+            **(
+                {"DB_PATH": str(DB_PATH)}
+                if str(engine.url).startswith("sqlite")
+                else {"DATABASE_URL": _sanitized_database_url(str(engine.url))}
+            ),
         },
     )
-    Base.metadata.create_all(bind=engine)
-    ensure_song_credit_entries_position_column(engine)
-    ensure_auth_user_schema(engine)
-    ensure_refresh_token_schema(engine)
-    _ensure_listening_session_hybrid_schema()
-    _ensure_listening_events_idempotency()
-    _ensure_listening_events_correlation_id()
-    _ensure_payout_settlements_columns()
-    _ensure_treasury_schema_constraints()
+    if _schema_bootstrap_enabled():
+        logger.warning(
+            "ALLOW_SCHEMA_BOOTSTRAP is enabled. "
+            "Running create_all/compat schema bootstrap. "
+            "Use only for isolated local development."
+        )
+        Base.metadata.create_all(bind=engine)
+        ensure_song_credit_entries_position_column(engine)
+        ensure_song_deleted_at_column(engine)
+        ensure_auth_user_schema(engine)
+        ensure_refresh_token_schema(engine)
+        _ensure_listening_session_hybrid_schema()
+        _ensure_listening_events_idempotency()
+        _ensure_listening_events_correlation_id()
+        _ensure_payout_settlements_columns()
+        _ensure_treasury_schema_constraints()
+    else:
+        _attempt_dev_auto_migration()
+        _assert_schema_is_current()
     db = SessionLocal()
     try:
         ensure_treasury_entities(db)

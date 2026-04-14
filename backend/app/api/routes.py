@@ -22,14 +22,20 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func
+from sqlalchemy import case, desc, func
+from sqlalchemy.orm import joinedload
 
-# 🔥 nuevo import (service)
-from app.api.deps import get_listening_user_id, require_non_impersonation
+from app.api.deps import get_current_user, get_listening_user_id, require_non_impersonation
 from app.core.database import SessionLocal, get_db
+from app.data.genres import CANONICAL_GENRE_ORDER
 from app.models.artist import Artist
+from app.models.genre import Genre
 from app.models.listening_event import ListeningEvent
+from app.models.release import RELEASE_TYPE_ALBUM, Release
+from app.models.song_artist_split import SongArtistSplit
+from app.models.release_media_asset import RELEASE_MEDIA_ASSET_TYPE_COVER_ART, ReleaseMediaAsset
 from app.models.song import Song
+from app.models.subgenre import Subgenre
 from app.models.song_credit_entry import SongCreditEntry
 from app.models.song_featured_artist import SongFeaturedArtist
 from app.models.song_media_asset import (
@@ -68,10 +74,23 @@ from app.services.song_media_upload_service import (
     CoverResolutionInvalidError,
     MasterAudioImmutableError,
     WavFileTooLargeError,
+    effective_song_cover_art,
+    upload_release_cover_art,
     upload_song_cover_art,
     upload_song_master_audio,
 )
-from app.services.song_metadata_service import create_song_with_metadata
+from app.services.song_lifecycle_service import (
+    SongNotFoundError,
+    SongOwnershipError,
+    assert_user_owns_song,
+    delete_owned_song,
+)
+from app.services.song_metadata_service import create_song_with_metadata, update_existing_song_metadata
+from app.services.release_service import (
+    create_release,
+    get_release_progress,
+    get_release_tracks,
+)
 from app.services.song_split_validation import SplitValidationError
 from app.workers.settlement_worker import process_batch_settlement
 
@@ -611,10 +630,15 @@ class SetSongSplitsBody(BaseModel):
 
 
 SongCreditRole = Literal[
+    "songwriter",
+    "composer",
+    "arranger",
+    "producer",
     "musician",
+    "sound designer",
     "mix engineer",
     "mastering engineer",
-    "producer",
+    "artwork",
     "studio",
 ]
 
@@ -627,8 +651,46 @@ class CreateSongCreditBody(BaseModel):
 class CreateSongBody(BaseModel):
     title: str = Field(..., min_length=1)
     artist_id: int = Field(..., description="Primary (release) artist")
+    release_id: int | None = Field(default=None, description="Existing release to attach song to")
     featured_artist_ids: list[int] = Field(default_factory=list, max_length=20)
     credits: list[CreateSongCreditBody] = Field(default_factory=list, max_length=20)
+    genre_id: int | None = Field(default=None, ge=1)
+    subgenre_id: int | None = Field(default=None, ge=1)
+    moods: list[str] | None = Field(default=None, description="Optional mood tags")
+    country_code: str | None = Field(
+        default=None,
+        max_length=2,
+        description="ISO 3166-1 alpha-2 country code",
+    )
+    city: str | None = Field(default=None, max_length=128)
+
+
+class PatchSongBody(BaseModel):
+    """Full metadata snapshot for ``PATCH /songs/{id}`` (wizard / catalog edit)."""
+
+    title: str = Field(..., min_length=1)
+    artist_id: int = Field(..., ge=1, description="Must match the song's primary artist_id")
+    featured_artist_ids: list[int] = Field(default_factory=list, max_length=20)
+    credits: list[CreateSongCreditBody] = Field(default_factory=list, max_length=20)
+    genre_id: int | None = Field(default=None, ge=1)
+    subgenre_id: int | None = Field(default=None, ge=1)
+    moods: list[str] | None = Field(default=None, description="Optional mood tags")
+    country_code: str | None = Field(
+        default=None,
+        max_length=2,
+        description="ISO 3166-1 alpha-2 country code",
+    )
+    city: str | None = Field(default=None, max_length=128)
+
+
+class CreateReleaseBody(BaseModel):
+    title: str = Field(..., min_length=1)
+    artist_id: int = Field(..., ge=1)
+    release_type: Literal["single", "album"] = Field(default="album")
+    release_date: str = Field(
+        ...,
+        description="ISO 8601 datetime (e.g. 2026-04-13T12:00:00)",
+    )
 
 
 class StartSessionRequest(BaseModel):
@@ -636,21 +698,43 @@ class StartSessionRequest(BaseModel):
 
 
 @router.post("/songs")
-def post_create_song(body: CreateSongBody, db=Depends(get_db)):
+def post_create_song(
+    body: CreateSongBody,
+    db=Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
     Create a song with title, primary artist, optional featuring artists and credits.
     Does not upload audio or set splits; those use other endpoints.
     """
+    title_stripped = (body.title or "").strip()
+    if not title_stripped:
+        raise HTTPException(status_code=400, detail="Title is required")
+    artist = db.query(Artist).filter(Artist.id == int(body.artist_id)).one_or_none()
+    if artist is None:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    if artist.user_id is None or int(artist.user_id) != int(current_user.id):
+        raise HTTPException(status_code=403, detail="You do not own this artist")
     try:
         song = create_song_with_metadata(
             db,
-            title=body.title,
+            title=title_stripped,
             artist_id=body.artist_id,
+            release_id=body.release_id,
             featured_artist_ids=body.featured_artist_ids,
             credits=[c.model_dump() for c in body.credits],
+            genre_id=body.genre_id,
+            subgenre_id=body.subgenre_id,
+            moods=body.moods,
+            country_code=body.country_code,
+            city=body.city,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    moods_resp = None
+    if song.moods is not None:
+        moods_resp = [str(m) for m in song.moods]
 
     return {
         "song_id": song.id,
@@ -658,6 +742,63 @@ def post_create_song(body: CreateSongBody, db=Depends(get_db)):
         "artist_id": song.artist_id,
         "featured_artist_ids": list(body.featured_artist_ids),
         "credits": [c.model_dump() for c in body.credits],
+        "genre_id": song.genre_id,
+        "subgenre_id": song.subgenre_id,
+        "moods": moods_resp,
+        "country_code": song.country_code,
+        "city": song.city,
+    }
+
+
+@router.get("/genres")
+def list_genres(db=Depends(get_db)):
+    """Canonical main genres (fixed product order) with stable slugs."""
+    whens = [
+        (Genre.slug == slug, idx) for idx, (_n, slug) in enumerate(CANONICAL_GENRE_ORDER)
+    ]
+    ordering = case(*whens, else_=999)
+    rows = db.query(Genre).order_by(ordering, Genre.name.asc()).all()
+    return [{"id": int(r.id), "name": r.name, "slug": r.slug} for r in rows]
+
+
+@router.get("/genres/{genre_id}/subgenres")
+def list_subgenres_for_genre(genre_id: int, db=Depends(get_db)):
+    if db.query(Genre.id).filter(Genre.id == int(genre_id)).first() is None:
+        raise HTTPException(status_code=404, detail="Genre not found")
+    # TODO: consider sort_order column if UX requires non-alphabetical ordering
+    rows = (
+        db.query(Subgenre)
+        .filter(Subgenre.genre_id == int(genre_id))
+        .order_by(Subgenre.name.asc())
+        .all()
+    )
+    return [{"id": int(r.id), "name": r.name, "slug": r.slug} for r in rows]
+
+
+@router.post("/releases")
+def post_create_release(body: CreateReleaseBody, db=Depends(get_db)):
+    """Create a draft release (single or album)."""
+    try:
+        rdt = datetime.fromisoformat(body.release_date.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="release_date must be a valid ISO 8601 datetime string",
+        ) from exc
+    try:
+        release = create_release(
+            db,
+            title=body.title,
+            artist_id=body.artist_id,
+            release_type=body.release_type,
+            release_date=rdt,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "release_id": int(release.id),
+        "title": release.title,
+        "type": release.type,
     }
 
 
@@ -667,7 +808,12 @@ def get_song(song_id: int, db=Depends(get_db)):
     Song detail for upload wizard: status, duration, media flags, metadata joins.
     ``cover_url`` is a path relative to the API host (static ``/uploads`` mount).
     """
-    song = db.query(Song).filter(Song.id == int(song_id)).first()
+    song = (
+        db.query(Song)
+        .options(joinedload(Song.genre), joinedload(Song.subgenre))
+        .filter(Song.id == int(song_id), Song.deleted_at.is_(None))
+        .first()
+    )
     if song is None:
         raise HTTPException(status_code=404, detail="Song not found")
 
@@ -695,20 +841,28 @@ def get_song(song_id: int, db=Depends(get_db)):
         )
         .first()
     )
-    cover = (
-        db.query(SongMediaAsset)
-        .filter(
-            SongMediaAsset.song_id == int(song_id),
-            SongMediaAsset.kind == SONG_MEDIA_KIND_COVER_ART,
-        )
-        .first()
-    )
     has_master_audio = master is not None
-    has_cover_art = cover is not None
-    cover_url = None
-    if cover is not None and cover.file_path:
-        p = str(cover.file_path).replace("\\", "/").lstrip("/")
-        cover_url = f"/{p}"
+    has_cover_art, cover_path_raw = effective_song_cover_art(db, song)
+    cover_url = public_media_url_from_stored_path(cover_path_raw)
+
+    def _taxon(entity: Genre | Subgenre | None):
+        if entity is None:
+            return None
+        return {"id": int(entity.id), "name": entity.name, "slug": entity.slug}
+
+    moods_out = None
+    if song.moods is not None:
+        moods_out = [str(m) for m in song.moods]
+
+    split_rows = (
+        db.query(SongArtistSplit.artist_id, SongArtistSplit.share)
+        .filter(SongArtistSplit.song_id == int(song_id))
+        .order_by(SongArtistSplit.artist_id.asc())
+        .all()
+    )
+    splits_out = [
+        {"artist_id": int(aid), "share": float(share)} for aid, share in split_rows
+    ]
 
     return {
         "id": song.id,
@@ -718,10 +872,116 @@ def get_song(song_id: int, db=Depends(get_db)):
         "duration_seconds": song.duration_seconds,
         "featured_artist_ids": featured_artist_ids,
         "credits": credits,
+        "splits": splits_out,
         "has_master_audio": has_master_audio,
         "has_cover_art": has_cover_art,
         "cover_url": cover_url,
+        "genre_id": song.genre_id,
+        "subgenre_id": song.subgenre_id,
+        "genre": _taxon(song.genre),
+        "subgenre": _taxon(song.subgenre),
+        "moods": moods_out,
+        "country_code": song.country_code,
+        "city": song.city,
     }
+
+
+@router.patch("/songs/{song_id}")
+def patch_song_metadata(
+    song_id: int,
+    body: PatchSongBody,
+    db=Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Update song metadata for the upload wizard; respects ready-state locks."""
+    try:
+        song = assert_user_owns_song(db, user, song_id)
+    except SongNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SongOwnershipError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if int(body.artist_id) != int(song.artist_id):
+        raise HTTPException(
+            status_code=400,
+            detail="artist_id does not match this song's primary artist.",
+        )
+    try:
+        update_existing_song_metadata(
+            db,
+            song_id,
+            title=body.title,
+            featured_artist_ids=list(body.featured_artist_ids),
+            credits=[c.model_dump() for c in body.credits],
+            genre_id=body.genre_id,
+            subgenre_id=body.subgenre_id,
+            moods=body.moods,
+            country_code=body.country_code,
+            city=body.city,
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        if msg in {"title_locked", "featured_locked"}:
+            raise HTTPException(status_code=400, detail=msg) from exc
+        raise HTTPException(status_code=400, detail=msg) from exc
+    return {"status": "ok", "song_id": int(song_id)}
+
+
+@router.delete("/songs/{song_id}")
+def delete_song_endpoint(
+    song_id: int,
+    db=Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Soft-delete a song (sets deleted_at; owner-only)."""
+    try:
+        delete_owned_song(db, user, song_id)
+    except SongNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SongOwnershipError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"status": "ok", "song_id": int(song_id)}
+
+
+@router.get("/releases/{release_id}/tracks")
+def get_release_tracks_view(release_id: int, db=Depends(get_db)):
+    try:
+        tracks = get_release_tracks(db, int(release_id))
+        progress = get_release_progress(db, int(release_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "tracks": tracks,
+        "progress": progress,
+    }
+
+
+@router.post("/releases/{release_id}/upload-cover")
+def post_release_upload_cover(
+    release_id: int,
+    file: UploadFile = File(...),
+    db=Depends(get_db),
+):
+    """Upload cover art (JPEG/PNG) for a release; stored as ``ReleaseMediaAsset``."""
+    try:
+        upload_release_cover_art(
+            db,
+            int(release_id),
+            file.file,
+            original_filename=file.filename,
+            content_type=file.content_type,
+        )
+        db.commit()
+    except CoverResolutionInvalidError:
+        db.rollback()
+        return JSONResponse(
+            status_code=400,
+            content={"error": "cover_resolution_invalid"},
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise _http_from_upload_value_error(exc) from exc
+
+    return {"status": "ok", "release_id": int(release_id)}
 
 
 _MAX_ARTIST_SEARCH_Q_LEN = 128
@@ -779,7 +1039,7 @@ def list_artist_songs(
     _get_public_artist_or_404(db, artist_id)
     songs = (
         db.query(Song)
-        .filter(Song.artist_id == int(artist_id))
+        .filter(Song.artist_id == int(artist_id), Song.deleted_at.is_(None))
         .order_by(desc(Song.created_at))
         .limit(int(limit))
         .all()
@@ -802,15 +1062,39 @@ def list_artist_songs(
         elif asset.kind == SONG_MEDIA_KIND_COVER_ART:
             cover_by_sid[sid] = asset
 
+    release_ids = {int(s.release_id) for s in songs if s.release_id is not None}
+    releases_by_id: dict[int, Release] = {}
+    if release_ids:
+        for r in db.query(Release).filter(Release.id.in_(release_ids)).all():
+            releases_by_id[int(r.id)] = r
+
+    album_cover_path_by_rid: dict[int, str] = {}
+    if release_ids:
+        for a in (
+            db.query(ReleaseMediaAsset)
+            .filter(
+                ReleaseMediaAsset.release_id.in_(release_ids),
+                ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+            )
+            .all()
+        ):
+            if a.file_path and str(a.file_path).strip():
+                album_cover_path_by_rid[int(a.release_id)] = str(a.file_path).strip()
+
     payload = []
     for song in songs:
         sid = int(song.id)
         master = master_by_sid.get(sid)
         cover = cover_by_sid.get(sid)
         has_master_audio = master is not None
-        cover_url = public_media_url_from_stored_path(
-            cover.file_path if cover else None,
-        )
+        rel = releases_by_id.get(int(song.release_id)) if song.release_id is not None else None
+        if rel is not None and rel.type == RELEASE_TYPE_ALBUM:
+            acp = album_cover_path_by_rid.get(int(rel.id))
+            cover_url = public_media_url_from_stored_path(acp)
+        else:
+            cover_url = public_media_url_from_stored_path(
+                cover.file_path if cover else None,
+            )
         audio_url = public_media_url_from_stored_path(
             master.file_path if master else None,
         )
@@ -895,6 +1179,11 @@ def post_song_upload_cover(
             content={"error": "cover_resolution_invalid"},
         )
     except ValueError as exc:
+        if str(exc).strip() == "cover_managed_at_release":
+            return JSONResponse(
+                status_code=400,
+                content={"error": "cover_managed_at_release"},
+            )
         raise _http_from_upload_value_error(exc) from exc
 
     return {"status": "ok", "song_id": song_id}
@@ -909,6 +1198,7 @@ def root():
 def upload_song(
     artist_id: int,
     title: str = Form(...),
+    release_id: int | None = Form(default=None),
     file: UploadFile = File(...),
     db=Depends(get_db),
 ):
@@ -923,6 +1213,7 @@ def upload_song(
             title=title,
             file=file.file,
             splits=None,
+            release_id=release_id,
             original_filename=file.filename,
             content_type=file.content_type,
         )
@@ -1243,22 +1534,35 @@ def get_pool_distribution():
 
 
 @router.put("/songs/{song_id}/splits")
-def put_song_splits(song_id: int, body: SetSongSplitsBody):
+def put_song_splits(
+    song_id: int,
+    body: SetSongSplitsBody,
+    db=Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """
     Replace all ``SongArtistSplit`` rows for a song. Validation runs before save.
 
     This is the supported application entry point for creating/updating splits.
     """
+    try:
+        song = assert_user_owns_song(db, user, song_id)
+    except SongNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SongOwnershipError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if str(song.upload_status or "").strip().lower() == "ready":
+        raise HTTPException(
+            status_code=400,
+            detail="splits_locked",
+        )
     rows = [r.model_dump() for r in body.splits]
-    db = SessionLocal()
     try:
         created = set_splits_for_song(db, song_id, rows)
     except SplitValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    finally:
-        db.close()
 
     return {
         "song_id": song_id,

@@ -21,6 +21,12 @@ export async function apiFetch(
   });
 }
 
+export type TaxonomyItem = {
+  id: number;
+  name: string;
+  slug: string;
+};
+
 export type SongDetail = {
   id: number;
   title: string;
@@ -29,9 +35,17 @@ export type SongDetail = {
   duration_seconds: number | null;
   featured_artist_ids: number[];
   credits: { name: string; role: string }[];
+  splits?: { artist_id: number; share: number }[];
   has_master_audio: boolean;
   has_cover_art: boolean;
   cover_url: string | null;
+  genre_id?: number | null;
+  subgenre_id?: number | null;
+  genre?: TaxonomyItem | null;
+  subgenre?: TaxonomyItem | null;
+  moods?: string[] | null;
+  country_code?: string | null;
+  city?: string | null;
 };
 
 /** Thrown when `GET /songs/{id}` returns 404 (use for user-facing copy, not raw JSON). */
@@ -54,6 +68,49 @@ export async function fetchSong(songId: number): Promise<SongDetail> {
   return res.json();
 }
 
+export type PatchSongMetadataBody = {
+  title: string;
+  artist_id: number;
+  featured_artist_ids: number[];
+  credits: { name: string; role: string }[];
+  genre_id?: number | null;
+  subgenre_id?: number | null;
+  moods?: string[];
+  country_code?: string | null;
+  city?: string | null;
+};
+
+export async function patchSongMetadata(
+  songId: number,
+  body: PatchSongMetadataBody,
+): Promise<void> {
+  const res = await apiFetch(`/songs/${songId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(
+      typeof detail === "string" && detail
+        ? detail
+        : `Failed to update song ${songId}`,
+    );
+  }
+}
+
+export async function deleteSong(songId: number): Promise<void> {
+  const res = await apiFetch(`/songs/${songId}`, { method: "DELETE" });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(
+      typeof detail === "string" && detail
+        ? detail
+        : `Failed to delete song ${songId}`,
+    );
+  }
+}
+
 export type ArtistPublic = {
   id: number;
   name: string;
@@ -64,6 +121,26 @@ export async function fetchArtist(artistId: number): Promise<ArtistPublic> {
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Failed to load artist ${artistId}`);
+  }
+  return res.json();
+}
+
+export async function fetchGenres(): Promise<TaxonomyItem[]> {
+  const res = await apiFetch("/genres");
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to load genres");
+  }
+  return res.json();
+}
+
+export async function fetchSubgenresForGenre(
+  genreId: number,
+): Promise<TaxonomyItem[]> {
+  const res = await apiFetch(`/genres/${genreId}/subgenres`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to load subgenres for genre ${genreId}`);
   }
   return res.json();
 }
@@ -146,6 +223,130 @@ export type UploadAudioErrorCode =
   | "master_audio_immutable";
 
 export type UploadCoverErrorCode = "cover_resolution_invalid";
+
+export type CreateReleaseDraftBody = {
+  title: string;
+  artist_id: number;
+  release_type: "single" | "album";
+  release_date: string;
+};
+
+export type CreateReleaseDraftResponse = {
+  release_id: number;
+  title: string;
+  type: string;
+};
+
+export async function createReleaseDraft(
+  body: CreateReleaseDraftBody,
+): Promise<CreateReleaseDraftResponse> {
+  const res = await apiFetch("/releases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to create release");
+  }
+  return res.json();
+}
+
+export type ReleaseTrackRow = {
+  id: number;
+  title: string;
+  track_number: number | null;
+  state: string;
+  upload_status: string;
+  has_master_audio: boolean;
+  has_cover_art: boolean;
+  completion_status: string;
+};
+
+export type ReleaseTracksResponse = {
+  tracks: ReleaseTrackRow[];
+  progress: {
+    total_tracks: number;
+    completed_tracks: number;
+    incomplete_tracks: number;
+    empty_tracks: number;
+  };
+};
+
+export async function fetchReleaseTracks(
+  releaseId: number,
+): Promise<ReleaseTracksResponse> {
+  const res = await apiFetch(`/releases/${releaseId}/tracks`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to load tracks for release ${releaseId}`);
+  }
+  return res.json();
+}
+
+export async function uploadReleaseCover(
+  releaseId: number,
+  file: File,
+): Promise<void> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await apiFetch(`/releases/${releaseId}/upload-cover`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to upload release cover");
+  }
+}
+
+export type CreateSongWithReleaseBody = {
+  title: string;
+  artist_id: number;
+  release_id: number;
+  featured_artist_ids: number[];
+  credits: { name: string; role: string }[];
+  genre_id?: number | null;
+  subgenre_id?: number | null;
+  moods?: string[];
+  country_code?: string | null;
+  city?: string | null;
+};
+
+export type SongSplitRow = {
+  artist_id: number;
+  share: number;
+};
+
+export async function putSongSplits(
+  songId: number,
+  splits: SongSplitRow[],
+): Promise<void> {
+  const res = await apiFetch(`/songs/${songId}/splits`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ splits }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to save royalty splits");
+  }
+}
+
+export async function createSongWithRelease(
+  body: CreateSongWithReleaseBody,
+): Promise<{ song_id: number }> {
+  const res = await apiFetch("/songs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to create song");
+  }
+  return res.json();
+}
 
 export async function parseErrorPayload(res: Response): Promise<{
   code?: string;

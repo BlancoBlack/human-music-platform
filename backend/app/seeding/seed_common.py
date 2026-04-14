@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import inspect
+import os
 import random
 import uuid
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from sqlalchemy import text
+from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
+from sqlalchemy import inspect as sa_inspect, text
 
 from app.core.database import Base, SessionLocal, engine
 from app.core.sqlite_compat import (
     ensure_auth_user_schema,
     ensure_refresh_token_schema,
     ensure_song_credit_entries_position_column,
+    ensure_song_deleted_at_column,
 )
 from app.models.artist import Artist
 from app.models.global_listening_aggregate import GlobalListeningAggregate
@@ -112,8 +117,51 @@ def _ensure_sqlite_compat_columns() -> None:
 
 
 def ensure_schema() -> None:
+    """
+    Enforce Alembic-managed schema by default.
+
+    For isolated local bootstrap only, set:
+      ALLOW_SCHEMA_BOOTSTRAP=true
+    """
+    allow_bootstrap = str(os.getenv("ALLOW_SCHEMA_BOOTSTRAP", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    backend_root = Path(__file__).resolve().parents[2]
+    cfg = AlembicConfig(str(backend_root / "alembic.ini"))
+    script = ScriptDirectory.from_config(cfg)
+    heads = list(script.get_heads())
+    if len(heads) != 1:
+        raise RuntimeError(f"Expected exactly one Alembic head revision, got: {heads}")
+    head_revision = str(heads[0])
+
+    with engine.connect() as conn:
+        inspector = sa_inspect(conn)
+        has_av = inspector.has_table("alembic_version")
+        revisions: list[str] = []
+        if has_av:
+            rows = conn.execute(text("SELECT version_num FROM alembic_version")).fetchall()
+            revisions = [str(r[0]) for r in rows if r and r[0] is not None]
+
+    if not allow_bootstrap:
+        if not has_av:
+            raise RuntimeError(
+                "Database schema is not initialized by Alembic. "
+                "Run: `cd backend && .venv/bin/alembic upgrade head`"
+            )
+        if len(revisions) != 1 or revisions[0] != head_revision:
+            raise RuntimeError(
+                "Database schema is outdated for seeding. "
+                f"Current alembic revision(s): {revisions}; head: {head_revision}. "
+                "Run: `cd backend && .venv/bin/alembic upgrade head`"
+            )
+        return
+
     Base.metadata.create_all(bind=engine)
     ensure_song_credit_entries_position_column(engine)
+    ensure_song_deleted_at_column(engine)
     ensure_auth_user_schema(engine)
     ensure_refresh_token_schema(engine)
     _ensure_sqlite_compat_columns()

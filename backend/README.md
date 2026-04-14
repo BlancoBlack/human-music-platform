@@ -8,28 +8,29 @@ Project-wide quickstart (Redis, venv, API, worker, frontend) lives in the **[roo
 
 ### Source of truth
 
-**SQLAlchemy models** under `app/models/` (imported via `app/core/database.py` into `Base.metadata`) are the **only** authoritative definition of tables and columns. If the schema should change, **edit the models** first.
+**Alembic migrations** are the only schema authority at runtime.  
+**SQLAlchemy models** define desired ORM shape, but startup no longer auto-creates/mutates schema.
 
 ### How schema gets applied
 
 | Layer | What it does |
 |--------|----------------|
-| **`Base.metadata.create_all()`** | Primary mechanism: creates missing tables/columns from models (`checkfirst` where used). |
-| **`app/main.py` startup (`startup_init`)** | Runs `create_all` **plus required SQLite-only patches** (`_ensure_listening_session_hybrid_schema`, listening event columns/indexes, payout settlement columns, treasury `system_key` indexes, etc.). These exist so older SQLite files and incremental dev DBs stay compatible. |
-| **`ensure_schema()`** in `app/seeding/seed_common.py` | Used by **seed scripts** and parity tooling: `create_all` plus `ensure_song_credit_entries_position_column`, auth/refresh token schema helpers, and `_ensure_sqlite_compat_columns()`. It **mirrors much of the startup intent** for processes that do not boot the full FastAPI app. |
-| **Alembic** (`alembic/`, `alembic.ini`) | **Bootstrap tool only** today: revision `0001_bootstrap_schema` runs `Base.metadata.create_all(..., checkfirst=True)` so `alembic upgrade head` can initialize an empty SQLite file (e.g. CI or `scripts/bootstrap_local_db.sh`). It is **not** a full replacement for startup/seed compat logic. |
+| **Alembic** (`alembic/`, `alembic.ini`) | **Required** path for schema changes and upgrades. Run `alembic upgrade head` before app startup. |
+| **`app/main.py` startup (`startup_init`)** | Verifies DB revision is current and fails fast if outdated. |
+| **`Base.metadata.create_all()`** | Disabled in normal runtime; allowed only with explicit `ALLOW_SCHEMA_BOOTSTRAP=true` for isolated local bootstrap/testing. |
+| **`ensure_schema()`** in `app/seeding/seed_common.py` | Enforces Alembic revision by default; optional bootstrap mode only via explicit env flag. |
 | **`migrations/*.sql`** | **Legacy / manual** SQL for brownfield SQLite DBs (constraints, FK rebuilds, payout hardening). **Not** run automatically on app start. See `migrations/README.md` for when and how to apply them. |
 
 ### Mental model
 
-> **If you want to change schema → edit models.**  
-> Everything else (`create_all`, startup patches, seeds, Alembic bootstrap) **adapts** to reflect or patch those models for local SQLite and tooling—it does not replace them as the source of truth.
+> **If you want to change schema → add an Alembic migration.**  
+> App startup and seed tooling now fail fast when DB schema is stale.
 
 ### DO NOT
 
-- **Do not** assume Alembic is the migration authority or that `alembic upgrade head` alone equals everything `main.py` startup does.
+- **Do not** skip `alembic upgrade head` before running app/seeds.
 - **Do not** delete `migrations/*.sql` (or skip reading `migrations/README.md`) without understanding upgrades for **existing** dev/prod SQLite databases.
-- **Do not** remove `create_all()` / startup `ensure_*` logic **without** a designed replacement (e.g. a full Alembic revision chain and a policy for when compat SQL runs).
+- **Do not** rely on implicit schema creation in production paths.
 
 ---
 
@@ -42,6 +43,66 @@ Project-wide quickstart (Redis, venv, API, worker, frontend) lives in the **[roo
 | `scripts/seed_data_v2.py` | Default V2 seed + ledger |
 | `app/seeding/seed_discovery_realistic_v2.py` | Large discovery-focused seed |
 | `alembic.ini` / `alembic/` | Bootstrap revision only (see above) |
+
+---
+
+## Song Ownership Model
+
+Artist-level ownership is enforced via `artists.user_id` (FK to `users.id`).
+
+Mutating song endpoints require the authenticated user to own the artist linked to the song:
+
+| Endpoint | Auth | Ownership check |
+|----------|------|-----------------|
+| `POST /songs` | `get_current_user` | `artist.user_id == current_user.id` |
+| `PATCH /songs/{id}` | `get_current_user` | `assert_user_owns_song` |
+| `DELETE /songs/{id}` | `get_current_user` | `assert_user_owns_song` |
+| `PUT /songs/{id}/splits` | `get_current_user` | `assert_user_owns_song` |
+
+`assert_user_owns_song` (in `song_lifecycle_service.py`) loads the song (excluding soft-deleted rows), resolves `song.artist_id -> artist.user_id`, and compares against the caller.
+
+**Known gap:** `upload-audio` and `upload-cover` endpoints do not enforce authentication or ownership yet.
+
+---
+
+## Soft Delete (songs)
+
+Songs use **soft delete** via `songs.deleted_at` (nullable `DateTime`).
+
+- `DELETE /songs/{id}` sets `deleted_at = now()` instead of removing the row.
+- All product-facing queries filter `Song.deleted_at.is_(None)`: catalog, discovery, streaming, listening sessions, analytics (user-facing metrics).
+- **Payout / financial queries must NOT filter** `deleted_at` — deleted songs may still have outstanding payouts.
+- Migration: `0012_song_soft_delete_deleted_at` (Alembic).
+
+---
+
+## Release Scheduling (MVP)
+
+Scheduled releases use release lifecycle state + discovery timestamp:
+
+- `publish_release()` sets:
+  - `state="scheduled"` when `release_date > now`
+  - `discoverable_at = release_date`
+- Auto-publish transitions:
+  - `scheduled -> published` when `now >= discoverable_at`
+  - implemented by `publish_due_releases(db)` in `app/services/release_service.py`
+
+Current infrastructure is intentionally simple:
+
+- polling loop runs inside `worker.py`
+- each interval performs DB query/update for due scheduled releases
+- no external cron or distributed scheduler in MVP
+
+Config:
+
+- `RELEASE_AUTO_PUBLISH_INTERVAL_SECONDS` (default: `45`)
+
+Notes:
+
+- This replaces the previous temporary behavior where discovery compensated for
+  scheduled visibility.
+- Discovery should now rely on published releases (`state="published"`) and
+  `discoverable_at` time gating.
 
 ---
 

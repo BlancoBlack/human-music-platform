@@ -42,6 +42,19 @@ def ensure_song_credit_entries_position_column(engine: Engine) -> None:
         )
 
 
+def ensure_song_deleted_at_column(engine: Engine) -> None:
+    """Add nullable ``songs.deleted_at`` for soft delete compatibility."""
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.begin() as conn:
+        if not _sqlite_table_exists(conn, "songs"):
+            return
+        if _pragma_column_exists(conn, "songs", "deleted_at"):
+            return
+        logger.info("Applying missing column: songs.deleted_at")
+        conn.execute(text("ALTER TABLE songs ADD COLUMN deleted_at DATETIME"))
+
+
 def ensure_auth_user_schema(engine: Engine) -> None:
     """
     Idempotent SQLite migrations for auth-related tables and columns.
