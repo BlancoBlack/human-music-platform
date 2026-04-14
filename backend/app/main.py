@@ -178,6 +178,9 @@ def _current_alembic_revisions(conn) -> list[str]:
 
 
 def _assert_schema_is_current() -> None:
+    # Tests use in-memory SQLite + create_all() without Alembic; skip revision check only there.
+    if os.getenv("SKIP_SCHEMA_CHECK") == "1":
+        return
     head = _alembic_head_revision()
     with engine.connect() as conn:
         revisions = _current_alembic_revisions(conn)
