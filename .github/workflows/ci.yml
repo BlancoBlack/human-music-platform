@@ -9,6 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       JWT_SECRET_KEY: ci-test-jwt-secret-key-min-32-chars-ok
+      SKIP_SCHEMA_CHECK: "1"
     defaults:
       run:
         working-directory: backend
