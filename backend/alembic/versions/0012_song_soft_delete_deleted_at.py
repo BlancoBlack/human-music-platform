@@ -18,39 +18,32 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def _drop_stale_sqlite_batch_table() -> None:
-    bind = op.get_bind()
-    if bind.dialect.name != "sqlite":
-        return
-    inspector = sa.inspect(bind)
-    if "_alembic_tmp_songs" not in inspector.get_table_names():
-        return
-    tmp = sa.Table("_alembic_tmp_songs", sa.MetaData())
-    tmp.drop(bind, checkfirst=True)
-
-
-def _set_sqlite_foreign_keys(enabled: bool) -> None:
-    bind = op.get_bind()
-    if bind.dialect.name != "sqlite":
-        return
-    bind.exec_driver_sql(f"PRAGMA foreign_keys={'ON' if enabled else 'OFF'}")
-
-
 def upgrade() -> None:
-    _drop_stale_sqlite_batch_table()
-    _set_sqlite_foreign_keys(False)
-    try:
-        with op.batch_alter_table("songs", recreate="always") as batch_op:
-            batch_op.add_column(sa.Column("deleted_at", sa.DateTime(), nullable=True))
-    finally:
-        _set_sqlite_foreign_keys(True)
+    """Add nullable deleted_at if missing.
+
+    Revision ``0001_bootstrap`` uses ``Base.metadata.create_all()`` against the
+    current ORM, so a **fresh** SQLite chain already has ``deleted_at``. Older
+    databases upgraded through ``0002``…``0011`` only need the column added here.
+    """
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    existing = {c["name"] for c in insp.get_columns("songs")}
+    if "deleted_at" in existing:
+        return
+    op.add_column(
+        "songs",
+        sa.Column("deleted_at", sa.DateTime(), nullable=True),
+    )
 
 
 def downgrade() -> None:
-    _drop_stale_sqlite_batch_table()
-    _set_sqlite_foreign_keys(False)
-    try:
-        with op.batch_alter_table("songs", recreate="always") as batch_op:
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    existing = {c["name"] for c in insp.get_columns("songs")}
+    if "deleted_at" not in existing:
+        return
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("songs") as batch_op:
             batch_op.drop_column("deleted_at")
-    finally:
-        _set_sqlite_foreign_keys(True)
+    else:
+        op.drop_column("songs", "deleted_at")
