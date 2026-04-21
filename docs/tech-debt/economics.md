@@ -7,7 +7,7 @@ Ledger, settlement, policy traceability, and **deferred product/legal** choices 
 ## Artist payout wallet: seed default vs real onboarding (product + ops)
 
 **Description**  
-Seeding (`seed_common` / `seed_data_v2`) assigns a **shared dev wallet** to artists when `payout_wallet_address` is empty—appropriate for **local/dev**. Artists can also set **`payout_wallet_address`** via existing server-rendered / form flows (`routes.py`). What is **not** decided yet: whether a wallet is **required** for onboarding, **custodial vs self-custody**, and **fallback treasury** behavior when no wallet is provided.
+Official developer seeding (`scripts/seed_core_state.py`) assigns a **shared dev wallet** for local/dev artist payout setup. Legacy seed paths may also assign shared wallets. Artists can also set **`payout_wallet_address`** via existing server-rendered / form flows (`routes.py`). What is **not** decided yet: whether a wallet is **required** for onboarding, **custodial vs self-custody**, and **fallback treasury** behavior when no wallet is provided.
 
 **Why it matters**  
 Production payouts and compliance depend on a clear wallet story; ambiguous defaults risk misdirected funds or blocked settlements.

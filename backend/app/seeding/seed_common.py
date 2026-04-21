@@ -269,6 +269,16 @@ def _upsert_songs(
     Discovery / custom seeds may pass explicit ``(title, artist_id)`` rows; then
     only ``len(artists) >= 1`` is required and every ``artist_id`` must belong to
     ``artists``.
+
+    .. warning::
+        **Global title matching:** lookups use ``Song.title == title`` with **no**
+        ``artist_id`` filter. Any existing row in the database with the same title
+        is reused and its ``artist_id`` may be **overwritten** to match the seed.
+        That is **unsafe** when callers use ``--no-reset`` / skip
+        ``reset_existing_data()`` and unrelated songs already share those titles.
+        For normal dev, prefer a migrated DB plus ``seed_data_v2.py --no-reset`` on
+        a database that only contains seed-intended titles, or run a full reset path
+        first. See ``backend/README.md`` (Official seed strategy).
     """
     db = SessionLocal()
     out: list[Song] = []

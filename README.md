@@ -42,6 +42,8 @@ Edit `backend/.env` as needed (see **Environment variables**).
 Use hostname **`localhost`** (not `127.0.0.1`) so the browser, cookies, and `NEXT_PUBLIC_API_BASE` all agree.
 
 ```bash
+./.venv/bin/python -m alembic upgrade head
+PYTHONPATH=. ./.venv/bin/python scripts/seed_core_state.py
 ./.venv/bin/python -m uvicorn app.main:app --reload --host localhost --port 8000
 ```
 
@@ -106,7 +108,7 @@ All backend and worker commands assume:
 1. **Current working directory is `backend/`** (the folder that contains `app/`, `worker.py`, and `requirements.txt`).
 2. **Interpreter is always `backend/.venv`** — never the system Python, Homebrew `python3`, or a global `uvicorn` on `PATH`.
 
-**Database & schema (single overview):** how models, `create_all`, startup SQLite patches, seeds, Alembic, and `migrations/*.sql` fit together — see **[backend/README.md — Database Architecture](backend/README.md#database-architecture-important)**.
+**Database & schema (single overview):** canonical backend architecture, Alembic workflow, startup behavior, and seed strategy — see **[backend/README.md — Backend Architecture](backend/README.md#backend-architecture-authoritative)**.
 
 Create the environment once per machine (do not copy `.venv` between computers):
 
@@ -216,13 +218,19 @@ AUTH_COOKIE_SECURE=false
 ### 4. Database
 
 **SQLite**  
-Configured in `app/core/database.py` as `sqlite:///./test.db` (file **`backend/test.db`** when the working directory is `backend`).
+Default local DB is **`backend/dev.db`** when `DATABASE_URL` is not set (configured in `app/core/database.py`).
 
-**Schema**  
-Created on API startup via `Base.metadata.create_all`; additional SQLite `ALTER TABLE` steps run in `main.py` for older files.
+**`DATABASE_URL` override**  
+If `DATABASE_URL` is set, SQLAlchemy uses that value directly (SQLite/Postgres supported by driver config).
 
 **Alembic**  
-Not present; no migration CLI.
+Schema authority is Alembic (`backend/alembic`, `backend/alembic.ini`). CI runs `python -m alembic upgrade head` before tests.
+
+**Startup rules (`app/main.py`)**
+
+- In `APP_ENV=dev|development`, startup attempts `alembic upgrade head`.
+- Startup then validates DB revision is current (fails fast when stale, unless `SKIP_SCHEMA_CHECK=1`).
+- `Base.metadata.create_all()` is only used in explicit bootstrap mode (`ALLOW_SCHEMA_BOOTSTRAP=true`), not normal runtime.
 
 **Postgres in Docker**  
 `infra/docker-compose.yml` defines Postgres, but the application code does not use it with the current `DATABASE_URL`.
@@ -263,7 +271,9 @@ Use the **same** `backend/.venv` as the API: `./.venv/bin/python worker.py` from
 
 | Script | Role |
 |--------|------|
-| `./.venv/bin/python scripts/seed_data_v2.py` | Seed data + V2 ledger (batch → snapshot → lines) |
+| `PYTHONPATH=. ./.venv/bin/python scripts/seed_core_state.py` | Official core seed for local/dev demos |
+| `PYTHONPATH=. ./.venv/bin/python scripts/seed_genres.py` | CI/internal minimal taxonomy seed |
+| `./.venv/bin/python scripts/seed_data_v2.py` | Legacy optional seed path (use with care) |
 | `./.venv/bin/python scripts/test_distribution_vs_ledger_parity.py` | Distribution vs ledger parity check |
 | `./.venv/bin/python scripts/test_stream_concurrency.py` | Concurrent `/stream` smoke test (API must be running) |
 | `./.venv/bin/python -m pytest tests/` | `backend/tests/` |
@@ -293,7 +303,7 @@ For detailed backend implementation notes and contract context, see [`backend/RE
 ### 7. Optional tools (recommended)
 
 **`sqlite3` CLI**  
-Inspect `backend/test.db` locally.
+Inspect `backend/dev.db` locally (unless `DATABASE_URL` points elsewhere).
 
 Install: usually preinstalled on macOS; else [SQLite](https://www.sqlite.org/download.html)
 
