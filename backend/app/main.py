@@ -72,7 +72,41 @@ class DevOriginWarningMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-app = FastAPI()
+app = FastAPI(
+    title="Human Music Platform API",
+    description=(
+        "Backend API for streaming events, payout previews, and artist analytics.\n\n"
+        "Quick start:\n"
+        "1) Read onboarding at `/tutorial`\n"
+        "2) Use production streaming endpoints under `Streaming`\n"
+        "3) Use `Dev Tools` only for local testing\n\n"
+        "Authentication:\n"
+        "- Preferred: `Authorization: Bearer <access_token>`\n"
+        "- Legacy (dev-only if enabled): `X-User-Id` header"
+    ),
+    openapi_tags=[
+        {
+            "name": "Streaming",
+            "description": "Production listening ingestion and session tracking.",
+        },
+        {
+            "name": "Payouts",
+            "description": "User-centric payout previews and settlement/admin payout routes.",
+        },
+        {
+            "name": "Analytics",
+            "description": "Artist and distribution analytics endpoints.",
+        },
+        {
+            "name": "Dev Tools",
+            "description": "Development-only endpoints; disabled in production.",
+        },
+        {
+            "name": "Onboarding",
+            "description": "Beginner walkthrough and usage tutorial pages.",
+        },
+    ],
+)
 
 # CORS: explicit origins when cookies / Authorization are used from the browser.
 app.add_middleware(

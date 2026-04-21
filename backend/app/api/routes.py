@@ -6,7 +6,7 @@ import threading
 import time
 from collections import deque
 from datetime import date, datetime, timedelta
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 from urllib.parse import quote, urlencode
 
 from fastapi import (
@@ -15,6 +15,7 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -697,6 +698,47 @@ class StartSessionRequest(BaseModel):
     song_id: int
 
 
+class StreamEventRequest(BaseModel):
+    song_id: int = Field(..., examples=[1], description="Song being streamed")
+    duration: int = Field(..., examples=[30], description="Played seconds in this event")
+    session_id: int | None = Field(
+        default=None,
+        examples=[101],
+        description="Optional listening session id from /stream/start-session",
+    )
+    idempotency_key: str | None = Field(
+        default=None,
+        examples=["strm-1-song-1-30s"],
+        description="Optional dedupe key for safe retries",
+    )
+    correlation_id: str | None = Field(
+        default=None,
+        examples=["mobile-playback-2026-04-21-001"],
+        description="Optional trace id across logs",
+    )
+
+
+class DevStreamRequest(BaseModel):
+    user_id: int = Field(..., examples=[1], description="Listener user id (dev only)")
+    song_id: int = Field(..., examples=[1], description="Song id")
+    duration: int = Field(..., examples=[30], description="Played seconds")
+    session_id: int | None = Field(
+        default=None,
+        examples=[101],
+        description="Existing session id when testing checkpoint flow",
+    )
+    idempotency_key: str | None = Field(
+        default=None,
+        examples=["dev-user1-song1-30s"],
+        description="Optional dedupe key for retries",
+    )
+    correlation_id: str | None = Field(
+        default=None,
+        examples=["qa-run-42"],
+        description="Optional trace id",
+    )
+
+
 @router.post("/songs")
 def post_create_song(
     body: CreateSongBody,
@@ -1194,6 +1236,51 @@ def root():
     return {"message": "Human Music Platform API"}
 
 
+@router.get(
+    "/tutorial",
+    response_class=HTMLResponse,
+    tags=["Onboarding"],
+    summary="Beginner API tutorial",
+    description="Quick onboarding page for stream -> payouts -> results flow.",
+)
+def tutorial():
+    return """
+    <html>
+    <head>
+      <title>Human Music API Tutorial</title>
+      <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 16px; line-height: 1.45; }
+        .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+        code { background: #f5f5f5; padding: 2px 6px; border-radius: 6px; }
+      </style>
+    </head>
+    <body>
+      <h1>Human Music Platform API Tutorial</h1>
+      <p>Use this page with <code>/docs</code> open side-by-side.</p>
+      <div class="card">
+        <h2>1) Create stream</h2>
+        <p><b>Production:</b> <code>POST /stream</code> with Bearer token (or dev-only legacy <code>X-User-Id</code>).</p>
+        <p>Body example: <code>{"song_id":1,"duration":30}</code></p>
+      </div>
+      <div class="card">
+        <h2>2) Generate payout preview</h2>
+        <p><code>GET /payout/{user_id}</code> computes user-centric payout preview.</p>
+        <p><code>GET /pool-distribution</code> provides global pool comparison baseline.</p>
+      </div>
+      <div class="card">
+        <h2>3) View results</h2>
+        <p><code>GET /compare/{user_id}</code> compares payout models.</p>
+        <p><code>GET /artist-dashboard/{artist_id}</code> and analytics endpoints show artist outcomes.</p>
+      </div>
+      <div class="card">
+        <h2>Dev mode tools</h2>
+        <p><code>/dev/stream</code> and <code>/dev/events</code> are for local testing only.</p>
+      </div>
+    </body>
+    </html>
+    """
+
+
 @router.post("/artists/{artist_id}/songs")
 def upload_song(
     artist_id: int,
@@ -1228,18 +1315,49 @@ def upload_song(
     }
 
 
-@router.post("/stream")
+@router.post(
+    "/stream",
+    tags=["Streaming"],
+    summary="Create production stream event",
+    description=(
+        "Production listening ingestion endpoint. Use Bearer auth; "
+        "`X-User-Id` is a legacy fallback only when ENABLE_LEGACY_AUTH=true."
+    ),
+)
 def stream_event(
     request: Request,
     user_id: int = Depends(get_listening_user_id),
-    song_id: int = Body(...),
-    duration: int = Body(...),
-    session_id: str | int | None = Body(default=None),
-    idempotency_key: str | None = Body(default=None),
-    correlation_id: str | None = Body(default=None),
+    payload: StreamEventRequest = Body(
+        ...,
+        examples=[
+            {
+                "song_id": 1,
+                "duration": 30,
+                "session_id": 101,
+                "idempotency_key": "strm-1-song-1-30s",
+                "correlation_id": "mobile-playback-2026-04-21-001",
+            }
+        ],
+    ),
+    x_user_id_hint: Annotated[
+        str | None,
+        Header(
+            alias="X-User-Id",
+            description=(
+                "Legacy listener id header. Prefer Bearer token. "
+                "Only accepted when ENABLE_LEGACY_AUTH=true."
+            ),
+        ),
+    ] = None,
     db=Depends(get_db),
 ):
+    _ = x_user_id_hint
     _enforce_stream_rate_limit(request, user_id)
+    song_id = payload.song_id
+    duration = payload.duration
+    session_id = payload.session_id
+    idempotency_key = payload.idempotency_key
+    correlation_id = payload.correlation_id
 
     if duration <= 0:
         raise HTTPException(status_code=400, detail="Invalid duration")
@@ -1265,7 +1383,12 @@ def stream_event(
     )
 
 
-@router.post("/stream/start-session")
+@router.post(
+    "/stream/start-session",
+    tags=["Streaming"],
+    summary="Start production listening session",
+    description="Creates a session id used by `/stream/checkpoint` and optional `/stream` linkage.",
+)
 def stream_start_session(
     request: Request,
     payload: StartSessionRequest,
@@ -1278,7 +1401,12 @@ def stream_start_session(
     )
 
 
-@router.post("/stream/checkpoint")
+@router.post(
+    "/stream/checkpoint",
+    tags=["Streaming"],
+    summary="Write production playback checkpoint",
+    description="Stores in-session playback progress for the authenticated listener.",
+)
 def stream_checkpoint(
     request: Request,
     user_id: int = Depends(get_listening_user_id),
@@ -1305,6 +1433,9 @@ def stream_checkpoint(
         (os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
         in {"dev", "development", "local", "test"}
     ),
+    tags=["Dev Tools"],
+    summary="Create dev stream event (internal helper)",
+    description="Development-only internal helper backing the public `/dev/stream` endpoint.",
 )
 def _handle_dev_stream(
     db,
@@ -1354,10 +1485,28 @@ def _handle_dev_stream(
         (os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
         in {"dev", "development", "local", "test"}
     ),
+    tags=["Dev Tools"],
+    summary="Create dev stream event",
+    description=(
+        "Development-only stream endpoint. Supports explicit `user_id` and flexible body/query "
+        "inputs for testing idempotency/session/correlation behavior."
+    ),
 )
 def dev_stream_event(
     _dev_mode=Depends(require_dev_mode),
-    payload: dict | None = Body(default=None),
+    payload: DevStreamRequest | dict | None = Body(
+        default=None,
+        examples=[
+            {
+                "user_id": 1,
+                "song_id": 1,
+                "duration": 30,
+                "session_id": 101,
+                "idempotency_key": "dev-user1-song1-30s",
+                "correlation_id": "qa-run-42",
+            }
+        ],
+    ),
     user_id_q: int | None = Query(default=None, alias="user_id"),
     song_id_q: int | None = Query(default=None, alias="song_id"),
     duration_q: int | None = Query(default=None, alias="duration"),
@@ -1412,6 +1561,9 @@ def dev_stream_event(
         (os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
         in {"dev", "development", "local", "test"}
     ),
+    tags=["Dev Tools"],
+    summary="Create dev stream event via query",
+    description="Development-only convenience GET for quick manual testing.",
 )
 def dev_stream_get(
     user_id: int = Query(...),
@@ -1440,6 +1592,9 @@ def dev_stream_get(
         (os.getenv("APP_ENV") or os.getenv("ENV") or "").strip().lower()
         in {"dev", "development", "local", "test"}
     ),
+    tags=["Dev Tools"],
+    summary="Inspect recent listening events",
+    description="Development-only event inspector with user/song/time filters.",
 )
 def dev_events(
     user_id: int | None = Query(default=None),
@@ -1498,7 +1653,12 @@ def dev_events(
     ]
 
 
-@router.get("/payout/{user_id}")
+@router.get(
+    "/payout/{user_id}",
+    tags=["Payouts"],
+    summary="Preview payout distribution for one fan",
+    description="Computes user-centric payout preview by song and expanded artist allocation.",
+)
 def get_payout(user_id: int):
     songs = calculate_user_distribution(user_id)
     db = SessionLocal()
@@ -1528,7 +1688,12 @@ def get_payout(user_id: int):
     return {"meta": meta, "songs": songs, "artists": artists}
 
 
-@router.get("/pool-distribution")
+@router.get(
+    "/pool-distribution",
+    tags=["Payouts"],
+    summary="Preview global pool distribution",
+    description="Returns global/pool model distribution for ecosystem-level comparison.",
+)
 def get_pool_distribution():
     return calculate_global_distribution()
 
@@ -1573,12 +1738,21 @@ def put_song_splits(
     }
 
 
-@router.get("/compare/{user_id}")
+@router.get(
+    "/compare/{user_id}",
+    tags=["Analytics"],
+    summary="Compare user-centric and global models",
+    description="Side-by-side model comparison for one user id.",
+)
 def compare(user_id: int):
     return compare_models(user_id)
 
 
-@router.get("/artist/{artist_id}/streams")
+@router.get(
+    "/artist/{artist_id}/streams",
+    tags=["Analytics"],
+    summary="Get artist stream timeline",
+)
 def artist_streams(
     artist_id: int,
     range: str = Query(..., description="Time range preset"),
@@ -1596,7 +1770,11 @@ def artist_streams(
     )
 
 
-@router.get("/artist/{artist_id}/top-songs")
+@router.get(
+    "/artist/{artist_id}/top-songs",
+    tags=["Analytics"],
+    summary="Get artist top songs",
+)
 def artist_top_songs(
     artist_id: int,
     range: str = Query(..., description="Time range preset"),
@@ -1612,7 +1790,11 @@ def artist_top_songs(
     )
 
 
-@router.get("/artist/{artist_id}/top-fans")
+@router.get(
+    "/artist/{artist_id}/top-fans",
+    tags=["Analytics"],
+    summary="Get artist top fans",
+)
 def artist_top_fans(
     artist_id: int,
     range: str = Query(..., description="Time range preset"),
@@ -1628,7 +1810,11 @@ def artist_top_fans(
     )
 
 
-@router.get("/artist/{artist_id}/insights")
+@router.get(
+    "/artist/{artist_id}/insights",
+    tags=["Analytics"],
+    summary="Get artist narrative insights",
+)
 def artist_insights(
     artist_id: int,
     range: str = Query("last_30_days", description="Time range preset"),
