@@ -11,7 +11,9 @@ Its goal is to prevent:
 - product degradation
 - misalignment between technical and cultural layers
 
-This document must be treated as **source of truth**.
+**Implementation source of truth:** behavior, APIs, and “what ships today” live in **`/docs/state/`** (maintained per **`/docs/workflow.md`** using **`/prompts/base_task.md`** — state updates are **mandatory** for behavior-changing tasks). This file is **product and design philosophy**, not a substitute for `docs/state/`.
+
+This document must be treated as **source of truth for principles and intent**, not for low-level implementation facts.
 
 ---
 
