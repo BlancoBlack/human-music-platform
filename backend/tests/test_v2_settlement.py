@@ -31,7 +31,7 @@ from app.workers.settlement_worker import process_batch_settlement
 
 
 @pytest.fixture()
-def memory_db():
+def memory_db(seed_minimal_rbac_roles):
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -39,6 +39,8 @@ def memory_db():
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     db = Session()
+    seed_minimal_rbac_roles(db)
+    db.commit()
     yield db
     db.close()
 

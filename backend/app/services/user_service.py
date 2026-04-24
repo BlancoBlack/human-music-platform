@@ -40,10 +40,10 @@ def create_user(
     display_name: str,
     *,
     username: str | None = None,
-    default_role_name: str | None = "listener",
+    default_role_name: str | None = "user",
     onboarding_completed: bool = True,
 ) -> User:
-    """Create ``User``, ``UserProfile``, and default ``listener`` role in one place.
+    """Create ``User``, ``UserProfile``, and a default product role in one place.
 
     Persists the user row with ``flush`` so ``user.id`` is available for profile/role.
     Does **not** ``commit`` — callers own the transaction.
@@ -81,5 +81,19 @@ def create_user(
 
     db.add(UserProfile(user_id=user.id, display_name=dn))
     if default_role_name is not None:
-        assign_role_to_user(db, user_id=int(user.id), role_name=default_role_name)
+        rbac_role_name = map_product_role_to_rbac(default_role_name)
+        assign_role_to_user(db, user_id=int(user.id), role_name=rbac_role_name)
     return user
+
+
+def map_product_role_to_rbac(role: str) -> str:
+    """Map canonical product roles to current RBAC role names.
+
+    Compatibility layer (temporary): product ``user`` maps to RBAC ``listener``.
+    """
+    normalized = (role or "").strip().lower()
+    if normalized == "artist":
+        return "artist"
+    if normalized == "user":
+        return "listener"
+    raise ValueError("Invalid role")

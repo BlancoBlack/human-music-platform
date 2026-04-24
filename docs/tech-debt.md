@@ -2,6 +2,18 @@
 
 ## High Priority Issues
 
+- **Role System Duplication (user vs listener)**
+  - Product/auth layer uses canonical role `user`, while RBAC still uses legacy role name `listener`.
+  - A compatibility mapping layer is now used in user creation (`user -> listener`, `artist -> artist`) as a temporary stability fix.
+  - Risks:
+    - semantic confusion across API, RBAC, and tests
+    - elevated chance of permission bugs from role-name drift
+    - onboarding/payout flow coupling to legacy role vocabulary
+  - Required future action:
+    - perform full role migration to unified `user` role in RBAC
+    - update RBAC seeds and existing DB role records
+    - remove compatibility mapping after data migration
+
 - **Frontend route guard scope is too broad**
   - Global onboarding guard can force users to `/player` or `/onboarding` from unrelated authenticated routes.
   - Needs route-scoped policy (only onboarding-critical routes should be hard-gated).
