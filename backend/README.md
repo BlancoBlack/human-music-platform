@@ -1,5 +1,17 @@
 # Backend (FastAPI)
 
+## Python Version Requirement
+
+This project requires **Python 3.10 or higher**.
+
+It will NOT run on Python 3.9 or lower due to usage of modern typing syntax (e.g. `str | None`).
+
+Check your version:
+
+```bash
+python3 --version
+```
+
 Project-wide quickstart (Redis, venv, API, worker, frontend) lives in the **[root README.md](../README.md)**. Work from this directory for Python commands.
 
 ---
@@ -105,16 +117,39 @@ This CI flow is intentionally minimal (schema + taxonomy + tests), not full demo
 
 ## Developer Setup (canonical)
 
+### Setup
+
 From `backend/`:
 
-1. `.venv/bin/python -m pip install -r requirements.txt`
-2. `.venv/bin/python -m alembic upgrade head`
-3. `PYTHONPATH=. .venv/bin/python scripts/seed_core_state.py`
-4. `.venv/bin/python -m uvicorn app.main:app --reload --host localhost --port 8000`
+0. Prerequisite: Python `3.10+` (3.9 is not supported by current runtime annotations).
+1. Create virtual environment:
+   - `python3.11 -m venv .venv`
+2. Activate:
+   - `source .venv/bin/activate`
+3. Upgrade pip:
+   - `pip install --upgrade pip`
+4. Install all runtime + test dependencies:
+   - `pip install -r requirements.txt`
+5. Run migrations:
+   - `python -m alembic upgrade head`
+6. (Optional local data) seed core state:
+   - `PYTHONPATH=. python scripts/seed_core_state.py`
+7. Run API:
+   - `uvicorn app.main:app --reload`
+   - If port 8000 is busy: `uvicorn app.main:app --reload --port 8001`
 
 For worker:
 
 - `.venv/bin/python worker.py`
+
+### Testing
+
+All test dependencies are included in `requirements.txt` (not a separate dev file currently).
+
+From `backend/`:
+
+- Run full suite: `.venv/bin/python -m pytest`
+- Run a specific file: `.venv/bin/python -m pytest tests/test_auth.py`
 
 ---
 
@@ -249,22 +284,45 @@ For reliable local DX, always place the two required files before running full s
 
 ---
 
-## Song Ownership Model
+## Authorization and Ownership Model
 
-Artist-level ownership is enforced via `artists.user_id` (FK to `users.id`).
+Authorization combines JWT identity, RBAC permissions, and ownership checks.
 
-Mutating song endpoints require the authenticated user to own the artist linked to the song:
+- **Auth identity:** Bearer JWT (`get_current_user`).
+- **RBAC permissions:** `require_permission(...)` with permission checks from `has_permission(...)`.
+- **Ownership data:** `artists.owner_user_id` (FK to `users.id`) for resource-level checks.
 
-| Endpoint | Auth | Ownership check |
-|----------|------|-----------------|
-| `POST /songs` | `get_current_user` | `artist.user_id == current_user.id` |
-| `PATCH /songs/{id}` | `get_current_user` | `assert_user_owns_song` |
-| `DELETE /songs/{id}` | `get_current_user` | `assert_user_owns_song` |
-| `PUT /songs/{id}/splits` | `get_current_user` | `assert_user_owns_song` |
+Current important endpoint protections:
 
-`assert_user_owns_song` (in `song_lifecycle_service.py`) loads the song (excluding soft-deleted rows), resolves `song.artist_id -> artist.user_id`, and compares against the caller.
+- `POST /artists/{artist_id}/songs`:
+  - requires RBAC permission `upload_music`
+  - requires ownership-aware access via `can_edit_artist`
+- Admin payout/settlement routes:
+  - require RBAC permission `admin_full_access`
+  - also use impersonation guard on sensitive mutations
 
-**Known gap:** `upload-audio` and `upload-cover` endpoints do not enforce authentication or ownership yet.
+`assert_user_owns_song` (in `song_lifecycle_service.py`) remains in use for song mutation routes that validate ownership via song -> artist linkage.
+
+### Admin bootstrap (dev)
+
+To create/admin-enable a user in local development, assign an admin role in `user_roles`:
+
+```sql
+INSERT INTO user_roles (user_id, role)
+VALUES (<USER_ID>, 'admin');
+```
+
+Or update an existing user role row:
+
+```sql
+UPDATE user_roles
+SET role = 'admin'
+WHERE user_id = <USER_ID>;
+```
+
+Testing flow:
+- login (or register) and obtain access JWT
+- call admin endpoints with `Authorization: Bearer <token>`
 
 ---
 

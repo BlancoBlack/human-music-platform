@@ -9,6 +9,12 @@ class Artist(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    owner_user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     name = Column(String, nullable=False)
     system_key = Column(String(64), unique=True, nullable=True)
     payout_method = Column(String(32), nullable=False, default="none")
@@ -20,4 +26,9 @@ class Artist(Base):
         "User",
         back_populates="linked_artists",
         foreign_keys=[user_id],
+    )
+    owner = relationship(
+        "User",
+        back_populates="owned_artists",
+        foreign_keys=[owner_user_id],
     )

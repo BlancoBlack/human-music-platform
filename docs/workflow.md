@@ -31,6 +31,24 @@ This workflow is **mandatory** for engineering work tracked through Cursor (or a
 
 ---
 
+## Task classification
+
+Use this classification before selecting prompts/context:
+
+| Task type | Typical intent | Approach | Required prompt set | Context selection rule |
+|------|--------|--------|--------|--------|
+| **Analysis** | Understand system behavior, evaluate design options, review risk | Evidence-first reading, identify trade-offs, produce clear recommendations | `prompts/base_task.md` (+ domain prompt if subsystem-specific) | Include relevant `docs/state/*.md` contracts and the minimum code paths needed for claims |
+| **Implementation** | Add/change behavior in code or docs | Execute directly, verify, then update state docs | `prompts/base_task.md` + domain prompt when applicable | Include target state files + touched interfaces/files only |
+| **Debugging** | Resolve defects / inconsistencies | Reproduce, isolate root cause, patch, validate | `prompts/base_task.md` + `prompts/debug_task.md` (or primary domain + debug context) | Include state file for affected subsystem + failing path/log context |
+
+Model/effort routing:
+
+- **Reasoning-heavy posture** for unclear requirements, architecture choices, and complex debugging.
+- **Execution-heavy posture** for clear-scope implementation/refactor work.
+- Mixed tasks should start with short classification and then continue in one end-to-end loop.
+
+---
+
 ## Rules (non-optional)
 
 | Rule | Detail |
@@ -47,7 +65,7 @@ This workflow is **mandatory** for engineering work tracked through Cursor (or a
 
 - **`docs/PROMPT_TEMPLATE.md`** — Points at `prompts/base_task.md` and the prompt system for structured requests.
 - **`docs/LLM_context.md`** — Product philosophy and principles; **not** a substitute for `docs/state/`.
-- **`docs/ai-rules/execution_routing.md`** — Model/tool routing; does not relax state-layer rules.
+- **`prompts/task_launcher.md`** — Single task entry point that enforces prompt selection and minimum context.
 
 ---
 

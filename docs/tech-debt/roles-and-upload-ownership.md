@@ -1,22 +1,23 @@
 # Roles and upload ownership
 
-**Status:** Ownership enforcement **implemented** (artist-level via `artists.user_id`). Full role system (Label, Admin) is **not yet implemented**.  
-**Purpose:** Document the current ownership model and how a future **role system** will interact with the upload pipeline.
+**Status:** RBAC permissions are implemented and active on selected routes; ownership enforcement is implemented for artist upload via `can_edit_artist` and owner linkage. Label/roster-style multi-artist authorization is still future work.  
+**Purpose:** Document current RBAC + ownership behavior and future role/roster evolution in the upload pipeline.
 
 ---
 
 ## 1. Current ownership model (implemented)
 
-Artist-level ownership is enforced via `artists.user_id` (FK to `users.id`):
+Artist-level ownership now uses `artists.owner_user_id` as the primary ownership field (legacy `artists.user_id` still exists for backward compatibility in older paths):
 
-- **One authenticated user maps to one or more artists** through `artists.user_id`.
+- **One authenticated user maps to one or more artists** through owner linkage.
 - The upload wizard runs under a **fixed artist context** (`fixedArtistId` on `UploadWizard`).
 - **Server-side enforcement** on mutating song endpoints:
   - `POST /songs` — requires `artist.user_id == current_user.id` (403 otherwise).
   - `PATCH /songs/{id}` — ownership via `assert_user_owns_song` (song -> artist -> `user_id`).
   - `DELETE /songs/{id}` — same ownership check (soft delete).
   - `PUT /songs/{id}/splits` — same ownership check.
-- **Known gap:** media upload endpoints (`upload-audio`, `upload-cover`) do **not** enforce authentication or ownership at the route layer yet.
+- **Current enforcement:** `POST /artists/{artist_id}/songs` requires RBAC permission `upload_music` and ownership-aware authorization (`can_edit_artist`).
+- **Known gap:** media endpoints (`POST /songs/{song_id}/upload-audio`, `POST /songs/{song_id}/upload-cover`) are still tracked separately and should be reviewed under the same RBAC + ownership model.
 
 This model is **adequate for artist-only** journeys but **does not scale** once we introduce:
 

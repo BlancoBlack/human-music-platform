@@ -45,11 +45,11 @@ type AuthContextValue = {
   /** True when access JWT is a dev impersonation token (`/auth/me` includes `impersonation`). */
   isImpersonating: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string) => Promise<void>;
+  register: (payload: auth.RegisterPayload) => Promise<auth.RegisterResponse>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<boolean>;
   /** One `/auth/me` fetch; use after profile-changing server actions. */
-  refreshUser: () => Promise<void>;
+  refreshUser: () => Promise<UserMe | null>;
   /** Dev-only: act as another user (requires backend flags). */
   impersonateUser: (targetUserId: number) => Promise<void>;
   /** Exit impersonation by refreshing the real session from the httpOnly cookie. */
@@ -120,9 +120,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshUser = useCallback(async () => {
     if (!tokenRef.current) {
       setUser(null);
-      return;
+      return null;
     }
-    await syncUserFromMe();
+    return syncUserFromMe();
   }, [syncUserFromMe]);
 
   const impersonateUserFn = useCallback(
@@ -166,9 +166,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const register = useCallback(
-    async (email: string, password: string) => {
-      const tokens = await auth.register(email, password);
+    async (payload: auth.RegisterPayload) => {
+      const response = await auth.register(payload);
+      const tokens = {
+        access_token: response.access_token,
+        refresh_token: response.refresh_token,
+        token_type: response.token_type,
+      };
       await applyTokens(tokens);
+      return response;
     },
     [applyTokens],
   );

@@ -25,6 +25,26 @@ export type TokenResponse = {
   token_type: string;
 };
 
+export type RegisterResponse = TokenResponse & {
+  user_id: number;
+  email: string;
+  roles: string[];
+  onboarding_completed: boolean;
+  onboarding_step?: string | null;
+  sub_role?: string | null;
+  artist_id?: number | null;
+  label_id?: number | null;
+};
+
+export type RegisterPayload = {
+  email: string;
+  password: string;
+  username?: string;
+  artist_name?: string;
+  role: "user" | "artist";
+  sub_role?: "artist" | "label";
+};
+
 export type ImpersonationInfo = {
   actor_id: number;
   actor_email: string | null;
@@ -36,6 +56,9 @@ export type UserMe = {
   is_active: boolean;
   is_email_verified: boolean;
   display_name: string | null;
+  onboarding_completed?: boolean;
+  onboarding_step?: string | null;
+  sub_role?: string | null;
   roles: string[];
   impersonation?: ImpersonationInfo | null;
 };
@@ -57,19 +80,18 @@ async function readJsonError(res: Response): Promise<string> {
 }
 
 export async function register(
-  email: string,
-  password: string,
-): Promise<TokenResponse> {
+  payload: RegisterPayload,
+): Promise<RegisterResponse> {
   const res = await fetch(`${API_BASE}/auth/register`, {
     method: "POST",
     credentials: "include",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     throw new Error(await readJsonError(res));
   }
-  return res.json() as Promise<TokenResponse>;
+  return res.json() as Promise<RegisterResponse>;
 }
 
 export async function login(email: string, password: string): Promise<TokenResponse> {

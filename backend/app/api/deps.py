@@ -25,6 +25,7 @@ from app.core.jwt_tokens import (
     is_impersonation_token_payload,
 )
 from app.models.user import User
+from app.services.rbac_service import has_permission
 
 logger = logging.getLogger(__name__)
 
@@ -207,3 +208,20 @@ async def get_optional_user(
     if user is None or not user.is_active:
         return None
     return user
+
+
+def require_permission(permission_name: str):
+    name = (permission_name or "").strip()
+
+    async def _dependency(
+        user: Annotated[User, Depends(get_current_user)],
+        db: Annotated[Session, Depends(get_db)],
+    ) -> User:
+        if not has_permission(user, name, db=db):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Missing required permission: {name}",
+            )
+        return user
+
+    return _dependency

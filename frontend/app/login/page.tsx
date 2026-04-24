@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { Suspense, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
+import { resolveOnboardingRoute } from "@/lib/onboarding";
 
 function LoginForm() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const { login } = useAuth();
+  const { login, refreshUser } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -20,8 +20,8 @@ function LoginForm() {
     setPending(true);
     try {
       await login(email, password);
-      const ret = searchParams.get("returnUrl");
-      router.replace(ret && ret.startsWith("/") ? ret : "/");
+      const me = await refreshUser();
+      router.replace(resolveOnboardingRoute(me) ?? "/onboarding");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

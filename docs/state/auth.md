@@ -43,9 +43,28 @@
 
 ### Registration / profile
 
-- **`POST /auth/register`**: email normalization, password length 8–128, `create_user`, issues tokens; duplicate email → 400.
+- **`POST /auth/register`**: email normalization, token issuance, and role payload normalization with strict 400 validation on invalid combinations.
+- **Password hashing stability guard**: bcrypt is pinned to a passlib-compatible version and registration rejects passwords over bcrypt's 72-byte limit with explicit 400 (`"Password too long"`), avoiding runtime hash failures.
+- **Canonical role normalization**: internal persisted shape is now always `role ∈ {user, artist}` plus optional `sub_role`.
+  - If `role` is present it is authoritative.
+  - Else route falls back to legacy `role_type` (`user`, `artist`, `label`) for backward compatibility.
+  - `role=artist` requires `sub_role` in `{artist, label}`.
+  - `role=user` forbids `sub_role` (must be null).
+- **Role-based registration behavior**:
+  - `role=user` (or `role_type=user`): creates `User` + `UserProfile`, assigns RBAC role `user`, sets `onboarding_completed=false` and `onboarding_step=REGISTERED`.
+  - `role=artist, sub_role=artist` (or legacy `role_type=artist`): creates owned `Artist`, assigns RBAC role `artist`, sets `onboarding_completed=false`.
+  - `role=artist, sub_role=label` (or legacy `role_type=label`): creates owned `Artist` + owned `Label`, assigns RBAC role `artist`, sets `onboarding_completed=false`.
+- **Register response shape**: includes token pair plus registration context (`user_id`, `email`, `roles`, `onboarding_completed`, `onboarding_step`, `sub_role`, optional `artist_id`/`label_id`).
+- **`GET /auth/me` response** now includes onboarding state (`onboarding_completed`, `onboarding_step`) and `sub_role`.
+- **Onboarding state machine constants**: backend onboarding progression uses strict states: `REGISTERED` → `PREFERENCES_SET` → `DISCOVERY_STARTED` → `COMPLETED`.
+- **Magic-link preparation abstraction**: token issuance is centralized through `_issue_login_tokens_for_user(...)` to support future email-link login flow without changing route response contracts.
 - **`POST /auth/login`**: email/password; inactive → 403; unverified email **does not** block login (comment in code).
-- **`GET /auth/me`**: requires `get_current_user`; returns id, email, flags, `display_name` from profile, `roles` from `user_roles`, optional `impersonation` block if actor id on request state.
+- **`GET /auth/me`**: requires `get_current_user`; returns id, email, flags, `display_name` from profile, `roles` from `user_roles`, aggregated `permissions` from RBAC role-permission mappings, and optional `impersonation` block if actor id on request state.
+- **RBAC permissions layer**: tables `roles`, `permissions`, `role_permissions` exist alongside `user_roles` (kept for compatibility). Permission checks can use `get_user_permissions(user_id)` and `has_permission(user, permission_name)` from `app/services/rbac_service.py`; `has_permission` can use preloaded permissions to avoid repeated queries in one request path.
+- **Authorization helpers in use**: endpoint guards use `require_permission(permission_name)` for RBAC enforcement; artist write paths can combine RBAC with ownership checks via `can_edit_artist`.
+- **Prepared onboarding upload restriction**: helper `can_upload_song(user, artist, db)` is available for future enforcement; if `user.onboarding_completed=false`, upload is allowed only while artist has `<1` non-deleted song, otherwise unlimited.
+- **Role assignment validation**: role writes through `create_user` now validate role names against `roles.name` via `assign_role_to_user` / `validate_role_exists`; unknown role assignments are rejected.
+- **Invalid-role detection**: `/auth/me` keeps returning legacy `roles` values but triggers warning logs when a user has `user_roles.role` entries that do not exist in `roles.name`.
 
 ### Impersonation (development)
 
@@ -68,5 +87,7 @@
 
 ## KNOWN ISSUES
 
-- **Security**: `ADMIN_KEY` and similar secrets for other routes are separate from JWT; operators must not reuse weak defaults in production.
+- **Authorization posture**: admin and privileged write routes use JWT identity + RBAC permissions (`admin_full_access`, etc.); no parallel shared-secret route authorization remains.
 - **Cookie + CORS**: `main.py` documents `127.0.0.1` vs `localhost` mismatch for dev (middleware logs warning).
+- **RBAC linkage integrity gap**: `user_roles.role` is a free-form string (no FK to `roles`), so typos or renamed roles can still appear in `/auth/me.roles` while resolving to zero permissions.
+- **RBAC naming drift risk**: role matching is string-based (`user_roles.role == roles.name`) rather than id-based; this is backward compatible but more fragile than a `role_id` FK design.

@@ -22,6 +22,13 @@ class UserRole(Base):
         index=True,
     )
     role = Column(String(32), nullable=False)
+    # Nullable transition field: prepared for future FK-based role linkage.
+    role_id = Column(
+        Integer,
+        ForeignKey("roles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
-    user = relationship("User", back_populates="roles")
+    user = relationship("User", back_populates="user_role_entries")

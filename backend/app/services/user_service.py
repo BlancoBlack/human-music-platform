@@ -5,10 +5,10 @@ from __future__ import annotations
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.security import hash_password
+from app.core.security import hash_password, validate_password_for_bcrypt
 from app.models.user import User
 from app.models.user_profile import UserProfile
-from app.models.user_role import UserRole
+from app.services.rbac_service import assign_role_to_user
 
 # Dev/seed scripts only — not used for interactive accounts in production.
 SEED_LISTENER_PLACEHOLDER_PASSWORD = "seed-listener-password-do-not-use!!"
@@ -40,6 +40,8 @@ def create_user(
     display_name: str,
     *,
     username: str | None = None,
+    default_role_name: str | None = "listener",
+    onboarding_completed: bool = True,
 ) -> User:
     """Create ``User``, ``UserProfile``, and default ``listener`` role in one place.
 
@@ -59,8 +61,7 @@ def create_user(
 
     if not password or len(password) < 8:
         raise ValueError("Password must be at least 8 characters")
-    if len(password) > 128:
-        raise ValueError("Password must be at most 128 characters")
+    validate_password_for_bcrypt(password)
 
     dn = (display_name or "").strip()[:255] or "User"
 
@@ -69,6 +70,7 @@ def create_user(
         password_hash=hash_password(password),
         is_active=True,
         is_email_verified=False,
+        onboarding_completed=bool(onboarding_completed),
         username=username,
     )
     db.add(user)
@@ -78,5 +80,6 @@ def create_user(
         raise
 
     db.add(UserProfile(user_id=user.id, display_name=dn))
-    db.add(UserRole(user_id=user.id, role="listener"))
+    if default_role_name is not None:
+        assign_role_to_user(db, user_id=int(user.id), role_name=default_role_name)
     return user

@@ -209,11 +209,55 @@ export type DiscoveryResponse = {
   section_microcopy?: Record<string, string>;
 };
 
+export type FirstSessionResponse = {
+  tracks: DiscoveryTrack[];
+  mode: "onboarding";
+};
+
 export async function fetchDiscoveryHome(): Promise<DiscoveryResponse> {
   const res = await apiFetch("/discovery/home");
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || "Failed to load discovery home");
+  }
+  return res.json();
+}
+
+export async function submitOnboardingPreferences(payload: {
+  genres: string[];
+  artists: string[];
+}): Promise<{ onboarding_completed: boolean; onboarding_step?: string | null }> {
+  const res = await apiFetch("/onboarding/preferences", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to save onboarding preferences");
+  }
+  return res.json();
+}
+
+export async function fetchFirstSession(): Promise<FirstSessionResponse> {
+  const res = await apiFetch("/discovery/first-session", {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to load first playback session");
+  }
+  return res.json();
+}
+
+export async function completeOnboarding(): Promise<{
+  onboarding_completed: boolean;
+  onboarding_step?: string | null;
+}> {
+  const res = await apiFetch("/onboarding/complete", { method: "POST" });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to complete onboarding");
   }
   return res.json();
 }

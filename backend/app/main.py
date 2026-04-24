@@ -24,6 +24,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.engine.url import make_url
 from app.api.auth_routes import router as auth_router
 from app.api.discovery_routes import router as discovery_router
+from app.api.onboarding_routes import router as onboarding_router
 from app.api.routes import router
 from app.core.database import Base, DB_PATH, SessionLocal, engine
 from app.core.sqlite_compat import (
@@ -476,6 +477,7 @@ def startup_init() -> None:
 # rutas
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(discovery_router, prefix="/discovery", tags=["discovery"])
+app.include_router(onboarding_router, prefix="/onboarding", tags=["onboarding"])
 app.include_router(router)
 
 _uploads_dir = Path("uploads")

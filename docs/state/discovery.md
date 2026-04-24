@@ -5,6 +5,7 @@
 ### API
 
 - **`GET /discovery/home`** (`discovery_routes.py`): optional Bearer via `get_optional_user` (anonymous allowed).
+- **`POST /discovery/first-session`**: authenticated onboarding entrypoint that reuses discovery candidate/scoring pipeline, prioritizes diversity (dedupe by artist), filters to playable tracks, returns `{ tracks, mode: "onboarding" }`, and is reentrant for onboarding resume (`PREFERENCES_SET` advances to `DISCOVERY_STARTED`; `DISCOVERY_STARTED`/`COMPLETED` are accepted idempotently).
 - **Pipeline** (in order): `build_candidate_set` → `score_candidates` → `finalize_discovery_ranking` → `compose_discovery_sections` → `build_discovery_home_sections`.
 - **Response**: sections `play_now`, `for_you`, `explore`, `curated` with hydrated track payloads; includes `timings_ms` (`pool_ms`, `ranking_ms`).
 

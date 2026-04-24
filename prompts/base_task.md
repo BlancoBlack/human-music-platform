@@ -18,6 +18,29 @@ HumanSounds is a production-grade stack: **FastAPI** backend, **streaming ingest
 
 ---
 
+## EXECUTION MODE & MODEL SELECTION
+
+Use task intent to choose execution posture before doing work:
+
+- **Implementation mode (default):** when the request asks to add/edit/fix code or docs with clear scope. Execute directly, keep reasoning concise, and ship the change end-to-end.
+- **Analysis mode:** when the request asks for understanding, architecture options, comparison, or audit/review without immediate code changes. Focus on evidence, trade-offs, and explicit recommendations.
+- **Debug mode:** when symptoms are known but root cause is uncertain. Reproduce, isolate cause, then implement and verify the fix if requested.
+
+Task interpretation guide:
+
+- **Analysis tasks:** prioritize reasoning depth and structured findings; do not imply implementation happened unless files were actually changed.
+- **Implementation tasks:** prioritize execution and verification; avoid overlong planning when scope is already clear.
+- **Debugging tasks:** prioritize runtime facts, logs, and code-path tracing; include residual risk if unresolved.
+
+Model/tool routing guidance (execution-authoritative in this prompt layer):
+
+- Prefer a **reasoning-first pass** for unclear problems, architecture decisions, and complex multi-system debugging.
+- Prefer an **execution-first pass** for straightforward implementation/refactor tasks with clear acceptance criteria.
+- For mixed tasks, run a short reasoning pass first, then execute in the same task turn.
+- Always enforce sections **A/B/C** below regardless of chosen mode.
+
+---
+
 ## A) STATE LAYER MAINTENANCE — **MANDATORY — NOT OPTIONAL**
 
 After completing the task (same session, before marking work done):

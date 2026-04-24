@@ -192,3 +192,190 @@ Replace in-process polling with one of:
 - Keep `publish_due_releases` as the idempotent core transition function (already satisfied).
 - Extract invocation into standalone scheduled job runner.
 - Disable in-worker polling loop once scheduler job is active.
+
+---
+
+## RBAC role linkage uses string instead of foreign key
+
+**Description**  
+Current RBAC linkage depends on `user_roles.role` (string) matching `roles.name` instead of a fully enforced FK path. This is not referentially safe and can create silent mismatches where `/auth/me.roles` contains a role string that does not resolve to permissions.
+
+**Current mitigation**  
+- Runtime validation for assignment paths (`validate_role_exists`).
+- Warning logs when stored `user_roles.role` values do not match `roles.name`.
+- Transitional nullable `user_roles.role_id` FK column is now present for forward migration prep.
+
+**Planned solution**  
+Migrate to normalized linkage using `user_roles.role_id` (FK to `roles.id`) and remove dependence on string-based joins for permission resolution.
+
+**Migration plan (high-level)**  
+1. Backfill `role_id` from `role` where names match.  
+2. Switch joins/read paths to `role_id`.  
+3. Enforce `role_id NOT NULL` once backfill + dual-write period is stable.  
+4. Remove string-join dependency (`user_roles.role` no longer authoritative for linkage).
+
+**Priority:** MEDIUM  
+
+**When to address:** After compatibility window closes; before broader RBAC expansion and strict authorization rollout.
+
+---
+
+## Artist ownership lifecycle not defined (user deletion)
+
+**Current behavior**  
+`artists.owner_user_id` uses a nullable FK to `users.id` with `ON DELETE SET NULL`. If an owner user row is deleted, owned artists become unowned (`owner_user_id = NULL`) and no automatic transfer policy runs.
+
+**Risks**  
+- Ownership can be silently lost for active artist entities.  
+- Authorization paths that rely on ownership (`edit_own_artist`) may deny all non-admin edits after deletion.  
+- Operational ambiguity: no canonical actor is responsible for orphaned artists.
+
+**Possible strategies**  
+- **Transfer ownership** during deletion workflow (explicit target user/service account).  
+- **Soft-delete users** and keep owner rows addressable for auditability.  
+- **Prevent deletion** when ownership exists unless transfer is completed.
+
+**Recommended future direction**  
+Adopt a transfer-first lifecycle: block hard deletion of users with owned artists unless ownership is reassigned (or user is soft-deleted). Keep explicit audit trail for ownership moves.
+
+**Priority:** MEDIUM  
+
+**When to address:** Before endpoint-level ownership enforcement is turned on for write operations.
+
+---
+
+## Payment onboarding after registration (subscription state transition)
+
+**Description**  
+Registration currently ends at account + role/entity bootstrap. There is no payment onboarding step that transitions a regular user into a subscribed/paying state.
+
+**Why it matters**  
+Without explicit billing/subscription onboarding, product access tiers and future paid entitlements cannot be enforced consistently.
+
+**Current behavior**  
+Users can register and authenticate without any subscription setup flow; onboarding skips billing entirely.
+
+**Future solution**  
+- Introduce post-registration subscription setup flow.  
+- Add billing provider integration and subscription lifecycle states.  
+- Model and expose user state transition from free user to paying user.
+
+**Priority:** HIGH  
+
+**When to address:** Before launching paid features or subscription-gated product surfaces.
+
+---
+
+## Contributor role model for industry participants
+
+**Description**  
+Contributors (producers, engineers, managers, and similar participants) are not first-class platform identities in current role/onboarding models.
+
+**Why it matters**  
+Contributor identity is needed for richer credit graphs, royalty attribution, verification relationships, and future role-specific permissions.
+
+**Current behavior**  
+Song credit rows exist, but no dedicated contributor profile/onboarding model links contributor identity across songs/artists.
+
+**Future solution**  
+- Add contributor profile model and onboarding path.  
+- Link contributors to songs/artists as reusable identities.  
+- Prepare contributor payout eligibility and settlement integration.
+
+**Priority:** MEDIUM-HIGH  
+
+**When to address:** During next catalog/rights expansion, before contributor-side payout rollout.
+
+---
+
+## Curator role as upgrade flow from user
+
+**Description**  
+`curator` is not part of the registration role flow and lacks dedicated onboarding/profile support.
+
+**Why it matters**  
+Curation is a distinct product function (playlists, editorial content, discovery influence) and should be a controlled upgrade path from regular users.
+
+**Current behavior**  
+Curator capabilities are not initialized through `/auth/register`; no dedicated curator onboarding page/profile exists.
+
+**Future solution**  
+- Add explicit user-to-curator upgrade journey.  
+- Add curator profile model similar in structure to artist onboarding.  
+- Support curator playlist/editorial workflows and discovery impact tracking.
+
+**Priority:** HIGH  
+
+**When to address:** Before scaling editorial/discovery programs tied to curator performance.
+
+---
+
+## Label-artist collaboration and delegation model
+
+**Description**  
+Current label onboarding assumes straightforward ownership, but does not model nuanced artist-label collaboration contracts.
+
+**Why it matters**  
+Real label operations require partial control, delegated permissions, and artist approvals for release and metadata actions.
+
+**Current behavior**  
+Label entity ownership exists, but no explicit collaboration relationship model, delegation matrix, or artist approval workflow.
+
+**Future solution**  
+- Add normalized artist-label relationship model.  
+- Add permission delegation rules per relationship scope.  
+- Add release approval workflow with artist-side consent states.
+
+**Priority:** HIGH  
+
+**When to address:** Before multi-party label operations are opened in production.
+
+---
+
+## Artist verification system (multi-layer trust and rights checks)
+
+**Description**  
+No platform-level artist verification system currently exists.
+
+**Why it matters**  
+Verification is required for trust signaling, rights confidence, anti-fraud controls, and permission tiering as the platform scales.
+
+**Current behavior**  
+There are no verification badges, no trust tier outputs, and no identity/rights verification pipeline.
+
+**Future solution**  
+- **Basic verification**: social linking + metadata consistency checks.  
+- **Official verification**: KYC-lite identity and distributor/PRO matching.  
+- **Rights verification**: contract evidence, ownership proof, and audio fingerprint checks.  
+- **Advanced verification**: identity graph and hybrid verification scoring.
+
+**Expected output model**  
+- Verification badges for user-facing trust signals.  
+- Permission tiers unlocked by verification level.
+
+**Priority:** HIGH  
+
+**When to address:** Foundational for artist trust/risk controls; should start before broad creator onboarding expansion.
+
+---
+
+## Onboarding enforcement system (progressive unlock gates)
+
+**Description**  
+`users.onboarding_completed` exists, but backend routes do not yet enforce onboarding-completion gates.
+
+**Why it matters**  
+Without enforcement, onboarding status is informational only and cannot protect critical flows or progressive product unlocks.
+
+**Current behavior**  
+Onboarding state is set during registration, and helper logic exists for upload-cap decisions, but route-level blocking/unlock remains disabled.
+
+**Future solution**  
+- Enforce onboarding gates on selected actions until completion.  
+- Add guided onboarding UX states and step tracking.  
+- Implement progressive unlock model tied to onboarding milestones.
+
+**Priority:** MEDIUM  
+
+**When to address:** After onboarding UX steps are stabilized and before relying on onboarding state for policy/compliance.
+

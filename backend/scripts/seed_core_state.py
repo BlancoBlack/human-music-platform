@@ -184,6 +184,7 @@ def _ensure_core_artists(db: Session, users: list[User]) -> tuple[list[Artist], 
                 name=name,
                 system_key=sk,
                 user_id=int(user.id),
+                owner_user_id=int(user.id),
                 payout_method=PAYOUT_METHOD_STORED,
                 payout_wallet_address=ADMIN_WALLET,
                 is_system=False,
@@ -198,6 +199,9 @@ def _ensure_core_artists(db: Session, users: list[User]) -> tuple[list[Artist], 
                 dirty = True
             if int(row.user_id or 0) != int(user.id):
                 row.user_id = int(user.id)
+                dirty = True
+            if int(row.owner_user_id or 0) != int(user.id):
+                row.owner_user_id = int(user.id)
                 dirty = True
             if (row.payout_method or "").strip().lower() != PAYOUT_METHOD_STORED:
                 row.payout_method = PAYOUT_METHOD_STORED

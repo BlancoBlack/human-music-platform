@@ -30,6 +30,9 @@ class User(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     # TODO(economics): Block payout wallet changes for ``is_email_verified`` is False.
     is_email_verified = Column(Boolean, nullable=False, default=False)
+    onboarding_completed = Column(Boolean, nullable=False, default=True)
+    onboarding_step = Column(String(64), nullable=True)
+    sub_role = Column(String(32), nullable=True)
     created_at = Column(DateTime, nullable=True, default=datetime.utcnow)
 
     profile = relationship(
@@ -38,15 +41,32 @@ class User(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
-    roles = relationship(
+    user_role_entries = relationship(
         "UserRole",
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+    roles = relationship(
+        "Role",
+        secondary="user_roles",
+        primaryjoin="User.id == foreign(UserRole.user_id)",
+        secondaryjoin="foreign(UserRole.role) == Role.name",
+        viewonly=True,
     )
     linked_artists = relationship(
         "Artist",
         back_populates="user",
         foreign_keys="Artist.user_id",
+    )
+    owned_artists = relationship(
+        "Artist",
+        back_populates="owner",
+        foreign_keys="Artist.owner_user_id",
+    )
+    owned_labels = relationship(
+        "Label",
+        back_populates="owner",
+        foreign_keys="Label.owner_user_id",
     )
     refresh_tokens = relationship(
         "RefreshToken",

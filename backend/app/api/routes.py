@@ -26,7 +26,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import case, desc, func
 from sqlalchemy.orm import joinedload
 
-from app.api.deps import get_current_user, get_listening_user_id, require_non_impersonation
+from app.api.deps import (
+    get_current_user,
+    get_listening_user_id,
+    require_non_impersonation,
+    require_permission,
+)
 from app.core.database import SessionLocal, get_db
 from app.data.genres import CANONICAL_GENRE_ORDER
 from app.models.artist import Artist
@@ -63,6 +68,7 @@ from app.services.listening_checkpoint_service import (
 from app.services.stream_service import StreamService
 from app.services.comparison_service import compare_models
 from app.services.artist_dashboard_service import get_artist_dashboard
+from app.services.artist_access_service import can_edit_artist
 from app.services.analytics_service import (
     get_artist_insights,
     get_artist_streams_over_time,
@@ -108,8 +114,6 @@ else:
 router = APIRouter()
 
 stream_service = StreamService()
-
-ADMIN_KEY = "dev-secret"
 
 
 def _next_app_base_url() -> str:
@@ -1287,11 +1291,18 @@ def upload_song(
     title: str = Form(...),
     release_id: int | None = Form(default=None),
     file: UploadFile = File(...),
+    _permission_user: User = Depends(require_permission("upload_music")),
     db=Depends(get_db),
 ):
     """
     Upload a new song for an artist
     """
+    artist = db.query(Artist).filter(Artist.id == artist_id).first()
+    if artist is None:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    if not can_edit_artist(_permission_user, artist, db=db):
+        raise HTTPException(status_code=403, detail="Not allowed to modify this artist")
+
     service = SongIngestionService()
     try:
         song = service.create_song(
@@ -2065,15 +2076,12 @@ def artist_dashboard(artist_id: int):
 @router.post("/artist/{artist_id}/payout-method")
 def post_artist_payout_method(
     artist_id: int,
-    admin_key: str = Query(..., description="MVP shared secret; compare to ADMIN_KEY"),
     payout_method: str = Form(...),
     payout_wallet_address: str = Form(""),
     payout_bank_info: str = Form(""),
+    _permission_user: User = Depends(require_permission("admin_full_access")),
     _reject_impersonation: None = Depends(require_non_impersonation),
 ):
-    if admin_key != ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-
     raw_method = payout_method.strip().lower()
     if raw_method not in ALLOWED_PAYOUT_METHODS:
         raise HTTPException(status_code=422, detail="Invalid payout_method")
@@ -2133,14 +2141,11 @@ def post_artist_payout_method(
 
 @router.get("/admin/payouts")
 def get_admin_payouts(
-    admin_key: str = Query(..., description="MVP shared secret; compare to ADMIN_KEY"),
     status: Optional[str] = Query(None, description="Filter by payout status"),
     artist_id: Optional[int] = Query(None, description="Filter by artist id"),
     limit: int = Query(50, ge=1, le=500, description="Max rows to return"),
+    _permission_user: User = Depends(require_permission("admin_full_access")),
 ):
-    if admin_key != ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-
     db = SessionLocal()
     try:
         groups = fetch_admin_ledger_groups(
@@ -2177,12 +2182,10 @@ def get_admin_payouts(
 @router.post("/admin/settle-batch/{batch_id}")
 def post_admin_settle_batch(
     batch_id: int,
-    admin_key: str = Query(..., description="MVP shared secret; compare to ADMIN_KEY"),
+    _permission_user: User = Depends(require_permission("admin_full_access")),
     _reject_impersonation: None = Depends(require_non_impersonation),
 ):
     """Run V2 on-chain settlement for all artists in a finalized/posted batch."""
-    if admin_key != ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
     try:
         return process_batch_settlement(batch_id)
     except Exception as e:
@@ -2192,16 +2195,13 @@ def post_admin_settle_batch(
 @router.post("/admin/retry-payout/{payout_id}")
 def post_admin_retry_payout(
     payout_id: int,
-    admin_key: str = Query(..., description="MVP shared secret; compare to ADMIN_KEY"),
     status: Optional[str] = Query(None),
     artist_id: Optional[str] = Query(None),
     artist_name: Optional[str] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=500),
+    _permission_user: User = Depends(require_permission("admin_full_access")),
     _reject_impersonation: None = Depends(require_non_impersonation),
 ):
-    if admin_key != ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-
     raise HTTPException(
         status_code=501,
         detail=(
@@ -2213,16 +2213,13 @@ def post_admin_retry_payout(
 
 @router.get("/admin/payouts-ui", response_class=HTMLResponse)
 def admin_payouts_ui(
-    admin_key: str = Query(..., description="MVP shared secret; compare to ADMIN_KEY"),
     status: Optional[str] = Query(None, description="Filter by payout status"),
     artist_id: Optional[str] = Query(None, description="Filter by artist id"),
     artist_name: Optional[str] = Query(None, description="Filter by artist name"),
     limit: int = Query(50, ge=1, le=500, description="Max rows in table"),
     msg: Optional[str] = Query(None),
+    _permission_user: User = Depends(require_permission("admin_full_access")),
 ):
-    if admin_key != ADMIN_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-
     artist_id_int = None
     if artist_id:
         try:
@@ -2344,7 +2341,6 @@ def admin_payouts_ui(
             </tr>
         """
 
-    ak_esc = _html_escape(admin_key)
     artist_val = artist_id or ""
     artist_name_val = artist_name or ""
     sel_all = "selected" if not status else ""
@@ -2440,7 +2436,6 @@ def admin_payouts_ui(
         <section style="margin-bottom:24px; padding:20px; border:1px solid #ffc10755; border-radius:12px; background:#fffdf5;">
             <h2 style="margin-top:0;">Filters</h2>
             <form method="get" action="/admin/payouts-ui" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
-                <input type="hidden" name="admin_key" value="{ak_esc}" />
                 <p style="margin:0;">
                     <label for="f_status"><b>Status</b></label><br/>
                     <select name="status" id="f_status" style="margin-top:6px; min-width:160px;">
@@ -2584,7 +2579,7 @@ def artist_payouts(artist_id: int):
                 {method_banner}
             </div>
             <h3 style="margin-top:0; font-size:1rem;">Update settings</h3>
-            <form method="post" action="/artist/{artist_id}/payout-method?admin_key={ADMIN_KEY}" style="max-width:32rem;">
+            <form method="post" action="/artist/{artist_id}/payout-method" style="max-width:32rem;">
                 <p style="margin-bottom:10px;">
                     <label for="payout_method"><b>Payout method</b></label><br/>
                     <select name="payout_method" id="payout_method" style="margin-top:6px; min-width:200px;">
@@ -2606,7 +2601,7 @@ def artist_payouts(artist_id: int):
                 </p>
             </form>
             <p class="ah-muted" style="margin-top:16px; margin-bottom:0; font-size:0.85rem;">
-                Saving does not move funds. This form includes the MVP admin key in the request URL.
+                Saving does not move funds.
             </p>
         </section>
     """

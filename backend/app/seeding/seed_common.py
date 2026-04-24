@@ -237,7 +237,7 @@ def _upsert_artists(artist_names: Sequence[str] | None = None) -> list[Artist]:
         for idx, name in enumerate(names, start=1):
             artist = db.query(Artist).filter(Artist.name == name).first()
             if artist is None:
-                artist = Artist(name=name)
+                artist = Artist(name=name, owner_user_id=None)
                 db.add(artist)
                 db.flush()
             artist.payout_method = "crypto"

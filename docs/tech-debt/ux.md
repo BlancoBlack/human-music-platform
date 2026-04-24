@@ -59,7 +59,7 @@ Upload is the supply side of the catalog; friction reduces content.
 - **Edit mode** (wizard with `song_id` param, `PATCH /songs/{id}`): loads and hydrates all metadata. Songs with `upload_status === "ready"` lock title, featured artists, and royalty splits; genre, subgenre, credits, moods, location remain editable.  
 - **Royalty splits** (`PUT /songs/{id}/splits`): percentage splits across artists; `SongArtistSplit` table; locked once song is ready.  
 - **Soft delete** (`DELETE /songs/{id}`): sets `deleted_at`; song disappears from catalog, discovery, and analytics surfaces.  
-- **Ownership model**: `artists.user_id` links artist to auth user; enforced on create, update, delete, and splits.
+- **Ownership model**: ownership is transitioning to `artists.owner_user_id` (legacy `artists.user_id` may still appear in older code paths); mutating flows increasingly combine RBAC permissions with ownership checks.
 
 **Remaining gaps**  
 - Chunked upload for large masters (>100 MB WAV).  

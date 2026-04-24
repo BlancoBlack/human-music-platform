@@ -33,8 +33,16 @@ from app.core.refresh_token_validate import (
 )
 from app.core.security import verify_password
 from app.models.refresh_token import RefreshToken
+from app.models.artist import Artist
+from app.models.label import Label
 from app.models.user import User
 from app.models.user_role import UserRole
+from app.services.rbac_service import (
+    assign_role_to_user,
+    get_invalid_user_roles,
+    get_user_permissions,
+)
+from app.services.onboarding_state_service import REGISTERED
 from app.services.user_service import create_user, normalize_registration_email
 
 logger = logging.getLogger(__name__)
@@ -45,11 +53,46 @@ router = APIRouter()
 class RegisterRequest(BaseModel):
     email: str = Field(..., min_length=1, max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
+    role_type: str | None = Field(default=None)
+    role: str | None = Field(default=None)
+    sub_role: str | None = Field(default=None)
+    username: str | None = Field(default=None, min_length=1, max_length=64)
+    artist_name: str | None = Field(default=None, min_length=1, max_length=255)
 
     @field_validator("email")
     @classmethod
     def validate_email(cls, v: str) -> str:
         return normalize_registration_email(v)
+
+    @field_validator("role_type")
+    @classmethod
+    def validate_role_type(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        role_type = (v or "").strip().lower()
+        if role_type not in {"user", "artist", "label"}:
+            raise ValueError("role_type must be one of: user, artist, label")
+        return role_type
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        role = v.strip().lower()
+        if role not in {"user", "artist"}:
+            raise ValueError("role must be one of: user, artist")
+        return role
+
+    @field_validator("sub_role")
+    @classmethod
+    def validate_sub_role(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        sub_role = v.strip().lower()
+        if sub_role not in {"artist", "label"}:
+            raise ValueError("sub_role must be one of: artist, label")
+        return sub_role
 
 
 class LoginRequest(BaseModel):
@@ -87,6 +130,17 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class RegisterResponse(TokenResponse):
+    user_id: int
+    email: str
+    roles: list[str]
+    onboarding_completed: bool
+    onboarding_step: str | None = None
+    sub_role: str | None = None
+    artist_id: int | None = None
+    label_id: int | None = None
+
+
 class ImpersonationState(BaseModel):
     actor_id: int
     actor_email: str | None = None
@@ -98,7 +152,11 @@ class UserMeResponse(BaseModel):
     is_active: bool
     is_email_verified: bool
     display_name: str | None
+    onboarding_completed: bool
+    onboarding_step: str | None = None
+    sub_role: str | None = None
     roles: list[str]
+    permissions: list[str]
     impersonation: ImpersonationState | None = None
 
     model_config = {"from_attributes": False}
@@ -127,20 +185,106 @@ def _issue_tokens(db: Session, user: User) -> TokenResponse:
     )
 
 
-@router.post("/register", response_model=TokenResponse)
+def _issue_login_tokens_for_user(db: Session, user: User) -> TokenResponse:
+    """Password flow today; future magic-link flow should call this shared issuer."""
+    return _issue_tokens(db, user)
+
+
+def normalize_role_payload(body: RegisterRequest) -> tuple[str, str | None]:
+    """
+    Canonicalize register role payload to one internal source of truth.
+
+    Returns:
+        tuple(role, sub_role) where role is one of: user, artist
+    """
+    raw_role = (body.role or "").strip().lower() or None
+    raw_role_type = (body.role_type or "").strip().lower() or None
+    raw_sub_role = (body.sub_role or "").strip().lower() or None
+
+    if raw_role is not None:
+        role = raw_role
+    elif raw_role_type in {"user", "artist"}:
+        role = raw_role_type
+    elif raw_role_type == "label":
+        role = "artist"
+    else:
+        role = "user"
+
+    if role == "user":
+        if raw_sub_role is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="sub_role is not allowed when role is user",
+            )
+        return ("user", None)
+
+    if role != "artist":
+        raise HTTPException(status_code=400, detail="role must be one of: user, artist")
+
+    sub_role = raw_sub_role
+    if sub_role is None and raw_role is None:
+        # Legacy clients using role_type only.
+        if raw_role_type == "artist":
+            sub_role = "artist"
+        elif raw_role_type == "label":
+            sub_role = "label"
+    if sub_role not in {"artist", "label"}:
+        raise HTTPException(
+            status_code=400,
+            detail="sub_role is required for role=artist and must be one of: artist, label",
+        )
+    return ("artist", sub_role)
+
+
+@router.post("/register", response_model=RegisterResponse)
 def auth_register(
     body: RegisterRequest,
     response: Response,
     db: Session = Depends(get_db),
-) -> TokenResponse:
+) -> RegisterResponse:
     # TODO(economics): After email verification ships, require verified email for
     # withdrawal / payout-destination changes (see User.is_email_verified).
     if db.query(User.id).filter(User.email == body.email).first() is not None:
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    canonical_role, canonical_sub_role = normalize_role_payload(body)
     display_name = body.email.split("@")[0][:255] or "User"
+    onboarding_completed = False
+    onboarding_step = REGISTERED
+    display_name = (body.artist_name or body.username or display_name).strip()[:255] or "User"
+    username = (body.username or "").strip()[:64] or None
     try:
-        user = create_user(db, body.email, body.password, display_name)
+        user = create_user(
+            db,
+            body.email,
+            body.password,
+            display_name,
+            username=username,
+            default_role_name=None,
+            onboarding_completed=onboarding_completed,
+        )
+        user.onboarding_step = onboarding_step
+        user.sub_role = canonical_sub_role
+        assign_role_to_user(db, user_id=int(user.id), role_name=canonical_role)
+        created_artist_id: int | None = None
+        created_label_id: int | None = None
+        if canonical_role == "artist":
+            artist = Artist(
+                name=display_name,
+                owner_user_id=int(user.id),
+                user_id=int(user.id),
+            )
+            db.add(artist)
+            db.flush()
+            created_artist_id = int(artist.id)
+            if canonical_sub_role == "label":
+                label = Label(
+                    owner_user_id=int(user.id),
+                    name=f"{display_name} Label",
+                )
+                db.add(label)
+                db.flush()
+                created_label_id = int(label.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     except IntegrityError:
@@ -148,7 +292,7 @@ def auth_register(
         raise HTTPException(status_code=400, detail="Email already registered") from None
 
     try:
-        tokens = _issue_tokens(db, user)
+        tokens = _issue_login_tokens_for_user(db, user)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -158,7 +302,19 @@ def auth_register(
         db.rollback()
         raise HTTPException(status_code=500, detail="Registration failed") from None
     attach_refresh_cookie(response, tokens.refresh_token)
-    return tokens
+    return RegisterResponse(
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        token_type=tokens.token_type,
+        user_id=int(user.id),
+        email=str(user.email or ""),
+        roles=[canonical_role],
+        onboarding_completed=bool(user.onboarding_completed),
+        onboarding_step=user.onboarding_step,
+        sub_role=user.sub_role,
+        artist_id=created_artist_id,
+        label_id=created_label_id,
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -174,7 +330,7 @@ def auth_login(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Inactive user")
     try:
-        tokens = _issue_tokens(db, user)
+        tokens = _issue_login_tokens_for_user(db, user)
         db.commit()
     except Exception:
         logger.exception("auth_login_failed")
@@ -198,6 +354,9 @@ def auth_me(
         .all()
     )
     roles = [r[0] for r in roles_q]
+    # Preserve legacy role payload but detect unmapped role strings.
+    get_invalid_user_roles(user.id, db=db)
+    permissions = get_user_permissions(user.id, db=db)
     imp: ImpersonationState | None = None
     actor_id = getattr(request.state, "impersonation_actor_id", None)
     if actor_id is not None:
@@ -212,7 +371,11 @@ def auth_me(
         is_active=bool(user.is_active),
         is_email_verified=bool(user.is_email_verified),
         display_name=profile.display_name if profile else None,
+        onboarding_completed=bool(user.onboarding_completed),
+        onboarding_step=user.onboarding_step,
+        sub_role=user.sub_role,
         roles=roles,
+        permissions=permissions,
         impersonation=imp,
     )
 
