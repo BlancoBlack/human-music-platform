@@ -379,3 +379,23 @@ Onboarding state is set during registration, and helper logic exists for upload-
 
 **When to address:** After onboarding UX steps are stabilized and before relying on onboarding state for policy/compliance.
 
+---
+
+## Slug schema hardening deferred for SQLite-safe migration path
+
+**Description**  
+Public slug rollout keeps `artists.slug`, `releases.slug`, and `songs.slug` nullable in migration `0018_public_entity_slugs` to avoid SQLite table-rebuild operations.
+
+**Why it matters**  
+Enforcing `NOT NULL` on existing SQLite tables can require table rebuild semantics (`batch_alter_table`) and may fail or become risky in FK-heavy schemas.
+
+**Current behavior**  
+Slug columns are added additively, backfilled, and uniqueness is enforced with a dialect-safe strategy (unique constraint on non-SQLite, unique index fallback on SQLite). `NOT NULL` is intentionally deferred.
+
+**Proposed solution**  
+Add a future dialect-aware hardening migration to enforce `NOT NULL` where safe (or after production DB standardization), with explicit prechecks for null rows.
+
+**Priority:** MEDIUM  
+
+**When to address:** During schema-hardening phase after SQLite compatibility constraints are no longer required.
+

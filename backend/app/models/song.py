@@ -23,6 +23,7 @@ class Song(Base):
     __tablename__ = "songs"
 
     id = Column(Integer, primary_key=True, index=True)
+    slug = Column(String(255), nullable=False, unique=True, index=True)
     title = Column(String)
     system_key = Column(String(64), unique=True, nullable=True)
     artist_id = Column(Integer, ForeignKey("artists.id"))

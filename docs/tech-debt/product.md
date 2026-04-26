@@ -64,6 +64,26 @@ Research-backed dashboard IA pass; prioritize metrics artists ask for first.
 
 ---
 
+## Artist analytics onboarding bridge
+
+**Description**  
+Creator onboarding does not yet provide a complete guided bridge into analytics milestones and growth feedback loops.
+
+**Why it matters**  
+Artists need a clear transition from onboarding completion to actionable analytics signals.
+
+**Current behavior**  
+Onboarding and analytics capabilities exist as separate surfaces without a standardized guided bridge.
+
+**Proposed solution**  
+Introduce a creator onboarding-to-analytics progression with milestone-based guidance.
+
+**Priority:** HIGH  
+
+**When to address:** Before broad creator onboarding expansion.
+
+---
+
 ## Public / partner API
 
 **Description**  

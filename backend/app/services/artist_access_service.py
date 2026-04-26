@@ -6,6 +6,7 @@ from app.models.artist import Artist
 from app.models.song import Song
 from app.models.user import User
 from app.services.rbac_service import has_permission
+from app.services.slug_service import ensure_artist_slug
 
 
 def create_artist_for_user(
@@ -24,6 +25,8 @@ def create_artist_for_user(
         **artist_fields,
     )
     db.add(artist)
+    db.flush()
+    ensure_artist_slug(db, artist, name_source=artist_name)
     return artist
 
 

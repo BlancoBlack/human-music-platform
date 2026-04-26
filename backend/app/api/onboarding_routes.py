@@ -14,6 +14,7 @@ from app.services.onboarding_state_service import (
     PREFERENCES_SET,
     REGISTERED,
     advance_onboarding_state,
+    assert_canonical_onboarding_step,
     is_state_at_least,
     validate_onboarding_state,
 )
@@ -63,6 +64,9 @@ def post_onboarding_preferences(
         raise HTTPException(status_code=404, detail="User profile not found")
     profile.preferred_genres = body.genres
     profile.preferred_artists = body.artists
+    user.onboarding_step = COMPLETED
+    user.onboarding_completed = True
+    assert_canonical_onboarding_step(user.onboarding_step)
     db.commit()
     return OnboardingStateResponse(
         onboarding_completed=bool(user.onboarding_completed),
@@ -83,6 +87,7 @@ def post_onboarding_complete(
         user.onboarding_step = advance_onboarding_state(current, COMPLETED)
     elif current != COMPLETED:
         raise HTTPException(status_code=400, detail="Invalid onboarding transition")
+    assert_canonical_onboarding_step(user.onboarding_step)
     user.onboarding_completed = user.onboarding_step == COMPLETED
     db.commit()
     return OnboardingStateResponse(

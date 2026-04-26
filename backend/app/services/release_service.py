@@ -13,6 +13,7 @@ from app.models.release import (
     RELEASE_STATE_SCHEDULED,
     RELEASE_STATE_DRAFT,
     RELEASE_TYPE_ALBUM,
+    RELEASE_TYPE_EP,
     RELEASE_TYPE_SINGLE,
     Release,
 )
@@ -27,6 +28,7 @@ from app.models.song_media_asset import (
     SONG_MEDIA_KIND_MASTER_AUDIO,
     SongMediaAsset,
 )
+from app.services.slug_service import ensure_release_slug
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +108,8 @@ def create_release(
     if not cleaned_title:
         raise ValueError("title is required.")
     rtype = str(release_type or "").strip().lower()
-    if rtype not in {RELEASE_TYPE_SINGLE, RELEASE_TYPE_ALBUM}:
-        raise ValueError("release_type must be 'single' or 'album'.")
+    if rtype not in {RELEASE_TYPE_SINGLE, RELEASE_TYPE_ALBUM, RELEASE_TYPE_EP}:
+        raise ValueError("release_type must be 'single', 'ep', or 'album'.")
     if db.query(Artist.id).filter(Artist.id == int(artist_id)).first() is None:
         raise ValueError(f"Artist {artist_id} not found.")
 
@@ -120,6 +122,8 @@ def create_release(
         state=RELEASE_STATE_DRAFT,
     )
     db.add(release)
+    db.flush()
+    ensure_release_slug(db, release, title_source=cleaned_title)
     db.commit()
     db.refresh(release)
     return release
@@ -190,6 +194,7 @@ def get_release_tracks(db: Session, release_id: int) -> list[dict]:
         tracks.append(
             {
                 "id": sid,
+                "slug": song.slug,
                 "title": song.title,
                 "track_number": song.track_number,
                 "state": song.state,
@@ -559,6 +564,7 @@ def create_single_release_for_song(
     )
     db.add(release)
     db.flush()
+    ensure_release_slug(db, release, title_source=release.title)
 
     bind_song_to_release(db, song=song, release_id=int(release.id))
     db.refresh(song)

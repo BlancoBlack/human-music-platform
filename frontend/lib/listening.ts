@@ -25,11 +25,23 @@ function coerceStartSessionSongId(songId: number): number {
 
 export async function postStartSession(songId: number): Promise<StartSessionResponse> {
   const song_id = coerceStartSessionSongId(songId);
-  const res = await apiFetch("/stream/start-session", {
+  let res = await apiFetch("/stream/start-session", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({ song_id }),
   });
+  if (res.status === 401) {
+    // One retry for token-hydration races right after auth bootstrap/login navigation.
+    await sleep(150);
+    res = await apiFetch("/stream/start-session", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ song_id }),
+    });
+  }
+  if (res.status === 401 || res.status === 403) {
+    console.warn("[listening] start-session auth error", { status: res.status, song_id });
+  }
   if (!res.ok) {
     const t = await res.text();
     throw new Error(t || `start-session failed (${res.status})`);
@@ -49,11 +61,19 @@ export async function postCheckpoint(body: {
   sequence: number;
   position_seconds: number;
 }): Promise<Response> {
-  return apiFetch("/stream/checkpoint", {
+  const res = await apiFetch("/stream/checkpoint", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify(body),
   });
+  if (res.status === 401 || res.status === 403) {
+    console.warn("[listening] checkpoint auth error", {
+      status: res.status,
+      session_id: body.session_id,
+      song_id: body.song_id,
+    });
+  }
+  return res;
 }
 
 export type FinalizeResponse = {
@@ -73,12 +93,20 @@ export async function postFinalize(
   },
   opts?: { keepalive?: boolean },
 ): Promise<Response> {
-  return apiFetch("/stream", {
+  const res = await apiFetch("/stream", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify(body),
     keepalive: opts?.keepalive === true,
   });
+  if (res.status === 401 || res.status === 403) {
+    console.warn("[listening] finalize auth error", {
+      status: res.status,
+      session_id: body.session_id,
+      song_id: body.song_id,
+    });
+  }
+  return res;
 }
 
 /** Retries finalize with the same idempotency_key (safe for duplicates). */

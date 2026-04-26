@@ -101,9 +101,11 @@ from app.models import (
     listening_aggregate,
     user_balance,
     artist,
+    artist_slug_history,
     label,
     song_artist_split,
     release,
+    release_slug_history,
     release_media_asset,
     genre,
     subgenre,
@@ -114,4 +116,8 @@ from app.models import (
     snapshot_user_pool,
     snapshot_listening_input,
     payout_settlement,
+    song_slug_history,
 )
+
+# Register model-level slug listeners for all insert paths.
+from app.services import slug_service  # noqa: F401

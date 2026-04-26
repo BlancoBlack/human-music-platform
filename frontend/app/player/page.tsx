@@ -72,7 +72,7 @@ export default function PlayerPage() {
     }
     await completeOnboarding();
     const me = await refreshUser();
-    router.replace(resolveOnboardingRoute(me) ?? "/player");
+    router.replace(resolveOnboardingRoute(me) ?? "/discovery");
   }
 
   return (

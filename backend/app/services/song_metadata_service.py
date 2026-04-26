@@ -18,6 +18,7 @@ from app.services.song_metadata_validation import (
     validate_country_code,
     validate_genre_subgenre_pair,
 )
+from app.services.slug_service import ensure_song_slug, update_song_slug
 from app.services.song_state_service import sync_song_state_from_upload_status
 
 logger = logging.getLogger(__name__)
@@ -231,6 +232,7 @@ def create_song_with_metadata(
     )
     db.add(song)
     db.flush()
+    ensure_song_slug(db, song, title_source=cleaned_title)
     sync_song_state_from_upload_status(song)
     if release_id is not None:
         bind_song_to_release(db, song=song, release_id=int(release_id))
@@ -319,6 +321,7 @@ def update_existing_song_metadata(
         if not cleaned_title:
             raise ValueError("Title is required")
         song.title = cleaned_title
+        update_song_slug(db, song, title_source=cleaned_title)
         replace_song_featured_artists(db, int(song_id), primary_id, featured_artist_ids)
 
     _validate_song_genre_fields(db, genre_id=genre_id, subgenre_id=subgenre_id)

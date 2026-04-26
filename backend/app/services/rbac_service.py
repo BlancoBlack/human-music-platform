@@ -15,6 +15,8 @@ from app.models.user_role import UserRole
 
 logger = logging.getLogger(__name__)
 
+RBAC_DEFAULT_ROLE_NAMES: tuple[str, ...] = ("admin", "artist", "label", "listener")
+
 
 def validate_role_exists(role_name: str, db: Session | None = None) -> bool:
     name = (role_name or "").strip()
@@ -32,6 +34,23 @@ def validate_role_exists(role_name: str, db: Session | None = None) -> bool:
     finally:
         if owns_session:
             session.close()
+
+
+def ensure_role_exists(role_name: str, db: Session) -> Role:
+    name = (role_name or "").strip()
+    if not name:
+        raise ValueError("Role name is required")
+    row = db.query(Role).filter(Role.name == name).first()
+    if row is None:
+        row = Role(name=name)
+        db.add(row)
+        db.flush()
+    return row
+
+
+def ensure_default_roles(db: Session) -> None:
+    for role_name in RBAC_DEFAULT_ROLE_NAMES:
+        ensure_role_exists(role_name, db)
 
 
 def assign_role_to_user(

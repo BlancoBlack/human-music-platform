@@ -249,10 +249,10 @@ function SongPageInner() {
     <main className="mx-auto max-w-lg px-4 py-10">
       <div className="mb-8">
         <Link
-          href={`/artist-catalog?artist_id=${song.artist_id}`}
+          href={artist != null ? `/artist/${artist.slug}` : "/"}
           className="text-sm text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
         >
-          ← Artist catalog
+          ← Artist
         </Link>
       </div>
 

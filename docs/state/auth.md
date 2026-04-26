@@ -55,8 +55,9 @@
   - `role=artist, sub_role=artist` (or legacy `role_type=artist`): creates owned `Artist`, assigns RBAC role `artist`, sets `onboarding_completed=false`.
   - `role=artist, sub_role=label` (or legacy `role_type=label`): creates owned `Artist` + owned `Label`, assigns RBAC role `artist`, sets `onboarding_completed=false`.
 - **Register response shape**: includes token pair plus registration context (`user_id`, `email`, `roles`, `onboarding_completed`, `onboarding_step`, `sub_role`, optional `artist_id`/`label_id`).
-- **`GET /auth/me` response** now includes onboarding state (`onboarding_completed`, `onboarding_step`) and `sub_role`.
-- **Onboarding state machine constants**: backend onboarding progression uses strict states: `REGISTERED` → `PREFERENCES_SET` → `DISCOVERY_STARTED` → `COMPLETED`.
+- **`GET /auth/me` response** includes onboarding state (`onboarding_completed`, `onboarding_step`) and `sub_role`; onboarding step is canonicalized via `validate_onboarding_state(...)` before response serialization.
+- **Onboarding state machine constants**: backend onboarding progression uses strict canonical states: `REGISTERED` → `PREFERENCES_SET` → `DISCOVERY_STARTED` → `COMPLETED`.
+- **Onboarding write canonicalization**: onboarding completion writes uppercase `COMPLETED` only; model-level validator on `User.onboarding_step` rejects non-canonical values.
 - **Magic-link preparation abstraction**: token issuance is centralized through `_issue_login_tokens_for_user(...)` to support future email-link login flow without changing route response contracts.
 - **`POST /auth/login`**: email/password; inactive → 403; unverified email **does not** block login (comment in code).
 - **`GET /auth/me`**: requires `get_current_user`; returns id, email, flags, `display_name` from profile, `roles` from `user_roles`, aggregated `permissions` from RBAC role-permission mappings, and optional `impersonation` block if actor id on request state.
@@ -91,3 +92,5 @@
 - **Cookie + CORS**: `main.py` documents `127.0.0.1` vs `localhost` mismatch for dev (middleware logs warning).
 - **RBAC linkage integrity gap**: `user_roles.role` is a free-form string (no FK to `roles`), so typos or renamed roles can still appear in `/auth/me.roles` while resolving to zero permissions.
 - **RBAC naming drift risk**: role matching is string-based (`user_roles.role == roles.name`) rather than id-based; this is backward compatible but more fragile than a `role_id` FK design.
+- **Public data endpoints bypass auth layer**: several artist/user-id surfaces (`/artist-dashboard/{artist_id}`, `/artist-payouts/{artist_id}`, `/artist-analytics/{artist_id}`, `/artist/{artist_id}/...`, `/payout/{user_id}`, `/compare/{user_id}`, `/dashboard/{user_id}`) do not use `get_current_user` or ownership dependencies, so auth is not consistently enforced across payout/analytics reads.
+- **Mixed ownership source in authorization checks**: auth-aware write paths are split between legacy `artists.user_id` checks (`assert_user_owns_song`, `POST /songs`) and `can_edit_artist` checks on `artists.owner_user_id` (`POST /artists/{artist_id}/songs`), creating inconsistent access outcomes when the two fields diverge.

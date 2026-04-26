@@ -25,7 +25,8 @@ from app.core.jwt_tokens import (
     is_impersonation_token_payload,
 )
 from app.models.user import User
-from app.services.rbac_service import has_permission
+from app.models.user_role import UserRole
+from app.services.rbac_service import has_permission, validate_role_exists
 
 logger = logging.getLogger(__name__)
 
@@ -225,3 +226,20 @@ def require_permission(permission_name: str):
         return user
 
     return _dependency
+
+
+async def require_admin_user(
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
+    if not validate_role_exists("admin", db=db):
+        raise HTTPException(status_code=403, detail="Admin role is not configured")
+    is_admin = (
+        db.query(UserRole.id)
+        .filter(UserRole.user_id == int(user.id), UserRole.role == "admin")
+        .first()
+        is not None
+    )
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user

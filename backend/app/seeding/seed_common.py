@@ -9,11 +9,12 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from alembic import command as alembic_command
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect as sa_inspect, text
 
-from app.core.database import Base, SessionLocal, engine
+from app.core.database import DATABASE_URL, DB_PATH, Base, SessionLocal, engine
 from app.core.sqlite_compat import (
     ensure_auth_user_schema,
     ensure_refresh_token_schema,
@@ -46,6 +47,7 @@ from app.services.user_service import (
     SEED_LISTENER_PLACEHOLDER_PASSWORD,
     create_user,
 )
+from app.services.slug_service import ensure_artist_slug, ensure_song_slug
 from app.workers.listen_worker import process_listening_event
 
 DEFAULT_TOTAL_EVENTS = 5000
@@ -168,6 +170,10 @@ def ensure_schema() -> None:
 
 
 def reset_existing_data() -> None:
+    if DATABASE_URL.startswith("sqlite"):
+        _reset_sqlite_database_file()
+        return
+
     db = SessionLocal()
     try:
         # Break circular FK: payout_batches.snapshot_id -> payout_input_snapshots.id
@@ -201,6 +207,35 @@ def reset_existing_data() -> None:
         db.commit()
     finally:
         db.close()
+
+
+def _reset_sqlite_database_file() -> None:
+    backend_root = Path(__file__).resolve().parents[2]
+    db_path = _resolve_sqlite_db_path()
+    if db_path is None:
+        raise RuntimeError("SQLite reset requested but database file path could not be resolved.")
+
+    engine.dispose()
+    for candidate in (db_path, db_path.with_suffix(db_path.suffix + "-shm"), db_path.with_suffix(db_path.suffix + "-wal")):
+        try:
+            if candidate.exists():
+                candidate.unlink()
+        except OSError as exc:
+            raise RuntimeError(f"Failed to remove sqlite database file: {candidate}") from exc
+
+    cfg = AlembicConfig(str(backend_root / "alembic.ini"))
+    alembic_command.upgrade(cfg, "head")
+
+
+def _resolve_sqlite_db_path() -> Path | None:
+    if DB_PATH is not None:
+        return Path(DB_PATH)
+    url = DATABASE_URL.strip()
+    prefix = "sqlite:///"
+    if not url.startswith(prefix):
+        return None
+    raw = url[len(prefix) :]
+    return Path(raw).expanduser().resolve()
 
 
 def _upsert_users(usernames: Sequence[str] | None = None) -> list[User]:
@@ -240,6 +275,7 @@ def _upsert_artists(artist_names: Sequence[str] | None = None) -> list[Artist]:
                 artist = Artist(name=name, owner_user_id=None)
                 db.add(artist)
                 db.flush()
+                ensure_artist_slug(db, artist, name_source=name)
             artist.payout_method = "crypto"
             current_wallet = (artist.payout_wallet_address or "").strip()
             if (not current_wallet) or (current_wallet == _LEGACY_SEED_WALLET_PLACEHOLDER):
@@ -295,6 +331,7 @@ def _upsert_songs(
                     song = Song(title=title, artist_id=artist_id)
                     db.add(song)
                     db.flush()
+                    ensure_song_slug(db, song, title_source=title)
                 else:
                     song.artist_id = artist_id
                 if not (song.system_key or "").strip():
@@ -312,6 +349,7 @@ def _upsert_songs(
                     song = Song(title=title, artist_id=aid)
                     db.add(song)
                     db.flush()
+                    ensure_song_slug(db, song, title_source=title)
                 else:
                     song.artist_id = aid
                 if not (song.system_key or "").strip():

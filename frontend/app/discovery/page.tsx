@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useAudioPlayer } from "@/components/audio/AudioPlayerProvider";
+import { useAuth } from "@/context/AuthContext";
 import {
   API_BASE,
   fetchDiscoveryHome,
@@ -16,6 +18,7 @@ function Section({
   emptyMessage,
   microcopy,
   variant = "default",
+  emphasize = false,
 }: {
   title: string;
   listKey: string;
@@ -23,6 +26,7 @@ function Section({
   emptyMessage: string;
   microcopy?: string;
   variant?: "play_now" | "default";
+  emphasize?: boolean;
 }) {
   const headingClass =
     variant === "play_now"
@@ -46,7 +50,9 @@ function Section({
   }
 
   return (
-    <div className="mb-8">
+    <div
+      className={`mb-8 ${emphasize ? "rounded-xl border border-emerald-400/40 bg-emerald-500/5 p-3 shadow-[0_0_0_1px_rgba(52,211,153,0.15)]" : ""}`}
+    >
       <h2 className={headingClass}>{title}</h2>
       {microcopy && (
         <p className="mb-2 text-sm text-neutral-400">
@@ -86,13 +92,14 @@ function DiscoveryRow({
   track: DiscoveryTrack;
   isPlayNowLead?: boolean;
 }) {
+  const { authReady, isAuthenticated } = useAuth();
   const { playTrack, currentTrack, isPlaying, togglePlayback } =
     useAudioPlayer();
 
   const coverSrc =
     track.cover_url != null ? `${API_BASE}${track.cover_url}` : null;
   const displayTitle = track.title?.trim() ? track.title : "Untitled";
-  const canPlay = Boolean(track.playable && track.audio_url);
+  const canPlay = Boolean(track.playable && track.audio_url && authReady && isAuthenticated);
   const isCurrent = currentTrack?.id === track.id;
 
   const handleActivate = useCallback(() => {
@@ -259,9 +266,24 @@ function DiscoveryRow({
 }
 
 export default function DiscoveryPage() {
+  const searchParams = useSearchParams();
   const [data, setData] = useState<DiscoveryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showReadyBanner, setShowReadyBanner] = useState(false);
+  const fromOnboarding = useMemo(
+    () => searchParams.get("from") === "onboarding",
+    [searchParams],
+  );
+
+  useEffect(() => {
+    if (!fromOnboarding) return;
+    setShowReadyBanner(true);
+    const timeoutId = window.setTimeout(() => {
+      setShowReadyBanner(false);
+    }, 4500);
+    return () => window.clearTimeout(timeoutId);
+  }, [fromOnboarding]);
 
   useEffect(() => {
     let cancelled = false;
@@ -289,10 +311,21 @@ export default function DiscoveryPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
+      {/* EXPRESSION_LAYER: reserved for future illustration/motion integration */}
       <h1 className="mb-2 text-2xl font-semibold tracking-tight">Discovery</h1>
       <p className="mb-6 text-sm text-neutral-400">
         Music picked for you — based on your activity and platform trends
       </p>
+
+      {showReadyBanner && (
+        <div
+          className="mb-5 rounded-lg border border-emerald-300/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100"
+          role="status"
+        >
+          <p className="font-medium">Your feed is ready.</p>
+          <p className="text-emerald-200/90">Personalized for you. Press play whenever you want.</p>
+        </div>
+      )}
 
       {loading && (
         <p className="text-sm text-neutral-500 dark:text-neutral-400">
@@ -318,6 +351,7 @@ export default function DiscoveryPage() {
             variant="play_now"
             emptyMessage="Nothing queued yet"
             microcopy={data.section_microcopy?.play_now}
+            emphasize={fromOnboarding}
           />
           <Section
             title="For you"

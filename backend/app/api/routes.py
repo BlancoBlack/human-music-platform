@@ -29,6 +29,7 @@ from sqlalchemy.orm import joinedload
 from app.api.deps import (
     get_current_user,
     get_listening_user_id,
+    require_admin_user,
     require_non_impersonation,
     require_permission,
 )
@@ -98,6 +99,11 @@ from app.services.release_service import (
     get_release_progress,
     get_release_tracks,
 )
+from app.services.slug_service import (
+    resolve_artist_slug,
+    resolve_release_slug,
+    resolve_song_slug,
+)
 from app.services.song_split_validation import SplitValidationError
 from app.workers.settlement_worker import process_batch_settlement
 
@@ -126,6 +132,18 @@ def _artist_upload_href(artist_id: int) -> str:
 
 def _artist_catalog_href(artist_id: int) -> str:
     return f"{_next_app_base_url()}/artist-catalog?artist_id={artist_id}"
+
+
+def _artist_slug_href(slug: str) -> str:
+    return f"{_next_app_base_url()}/artist/{quote(slug)}"
+
+
+def _album_slug_href(slug: str) -> str:
+    return f"{_next_app_base_url()}/album/{quote(slug)}"
+
+
+def _track_slug_href(slug: str) -> str:
+    return f"{_next_app_base_url()}/track/{quote(slug)}"
 
 
 # Shared dark UI for artist HTML pages (dashboard / analytics / payouts).
@@ -912,6 +930,7 @@ def get_song(song_id: int, db=Depends(get_db)):
 
     return {
         "id": song.id,
+        "slug": song.slug,
         "title": song.title,
         "artist_id": song.artist_id,
         "upload_status": song.upload_status,
@@ -1064,7 +1083,7 @@ def search_artists(
         .all()
     )
     return {
-        "artists": [{"id": int(a.id), "name": a.name} for a in rows],
+        "artists": [{"id": int(a.id), "name": a.name, "slug": a.slug} for a in rows],
     }
 
 
@@ -1072,7 +1091,7 @@ def search_artists(
 def get_artist(artist_id: int, db=Depends(get_db)):
     """Public artist record for clients (e.g. upload wizard)."""
     artist = _get_public_artist_or_404(db, artist_id)
-    return {"id": artist.id, "name": artist.name}
+    return {"id": artist.id, "name": artist.name, "slug": artist.slug}
 
 
 @router.get("/artists/{artist_id}/songs")
@@ -1149,8 +1168,11 @@ def list_artist_songs(
         payload.append(
             {
                 "id": sid,
+                "slug": song.slug,
                 "title": song.title,
                 "artist_id": int(song.artist_id),
+                "release_id": int(song.release_id) if song.release_id is not None else None,
+                "release_slug": rel.slug if rel is not None else None,
                 "upload_status": upload_status,
                 "duration_seconds": song.duration_seconds,
                 "cover_url": cover_url,
@@ -1160,6 +1182,117 @@ def list_artist_songs(
             }
         )
     return {"songs": payload}
+
+
+@router.get("/artist/{slug}")
+def get_artist_by_slug(slug: str, db=Depends(get_db)):
+    artist, is_current = resolve_artist_slug(db, slug)
+    if artist is None or bool(artist.is_system):
+        raise HTTPException(status_code=404, detail="Artist not found")
+    canonical_slug = str(artist.slug or "").strip()
+    if not canonical_slug:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    if not is_current or canonical_slug != slug:
+        return RedirectResponse(url=f"/artist/{quote(canonical_slug)}", status_code=301)
+    songs_payload = list_artist_songs(artist_id=int(artist.id), limit=50, db=db)
+    return {
+        "id": int(artist.id),
+        "slug": canonical_slug,
+        "name": artist.name,
+        "canonical_url": _artist_slug_href(canonical_slug),
+        "songs": songs_payload.get("songs", []),
+    }
+
+
+@router.get("/album/{slug}")
+def get_album_by_slug(slug: str, db=Depends(get_db)):
+    release, is_current = resolve_release_slug(db, slug)
+    if release is None:
+        raise HTTPException(status_code=404, detail="Album not found")
+    canonical_slug = str(release.slug or "").strip()
+    if not canonical_slug:
+        raise HTTPException(status_code=404, detail="Album not found")
+    if not is_current or canonical_slug != slug:
+        return RedirectResponse(url=f"/album/{quote(canonical_slug)}", status_code=301)
+    artist = _get_public_artist_or_404(db, int(release.artist_id))
+    tracks = get_release_tracks_view(release_id=int(release.id), db=db)
+    return {
+        "id": int(release.id),
+        "slug": canonical_slug,
+        "title": release.title,
+        "type": release.type,
+        "artist": {
+            "id": int(artist.id),
+            "name": artist.name,
+            "slug": artist.slug,
+        },
+        "release_date": release.release_date.isoformat() if release.release_date else None,
+        "state": release.state,
+        "canonical_url": _album_slug_href(canonical_slug),
+        "tracks": tracks.get("tracks", []),
+        "progress": tracks.get("progress", {}),
+    }
+
+
+@router.get("/track/{slug}")
+def get_track_by_slug(slug: str, db=Depends(get_db)):
+    song, is_current = resolve_song_slug(db, slug)
+    if song is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    canonical_slug = str(song.slug or "").strip()
+    if not canonical_slug:
+        raise HTTPException(status_code=404, detail="Track not found")
+    if not is_current or canonical_slug != slug:
+        return RedirectResponse(url=f"/track/{quote(canonical_slug)}", status_code=301)
+    detail = get_song(song_id=int(song.id), db=db)
+    artist = _get_public_artist_or_404(db, int(song.artist_id))
+    album = None
+    if song.release_id is not None:
+        release = db.query(Release).filter(Release.id == int(song.release_id)).first()
+        if release is not None:
+            album = {
+                "id": int(release.id),
+                "slug": release.slug,
+                "title": release.title,
+            }
+    return {
+        **detail,
+        "id": int(song.id),
+        "slug": canonical_slug,
+        "artist": {
+            "id": int(artist.id),
+            "slug": artist.slug,
+            "name": artist.name,
+        },
+        "album": album,
+        "canonical_url": _track_slug_href(canonical_slug),
+    }
+
+
+@router.get("/alias/{artist_slug}/{release_slug}/{track_slug}")
+def alias_track_path_redirect(
+    artist_slug: str,
+    release_slug: str,
+    track_slug: str,
+    db=Depends(get_db),
+):
+    song, _ = resolve_song_slug(db, track_slug)
+    if song is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    release = None
+    if song.release_id is not None:
+        release = db.query(Release).filter(Release.id == int(song.release_id)).first()
+    artist = _get_public_artist_or_404(db, int(song.artist_id))
+    if artist.slug != artist_slug:
+        raise HTTPException(status_code=404, detail="Track not found")
+    if release is not None and (release.slug or "") != release_slug:
+        raise HTTPException(status_code=404, detail="Track not found")
+    canonical = str(song.slug or "").strip()
+    if not canonical:
+        raise HTTPException(status_code=404, detail="Track not found")
+    return RedirectResponse(url=f"/track/{quote(canonical)}", status_code=301)
+
+
 
 
 def _http_from_upload_value_error(exc: ValueError) -> HTTPException:
@@ -2144,7 +2277,7 @@ def get_admin_payouts(
     status: Optional[str] = Query(None, description="Filter by payout status"),
     artist_id: Optional[int] = Query(None, description="Filter by artist id"),
     limit: int = Query(50, ge=1, le=500, description="Max rows to return"),
-    _permission_user: User = Depends(require_permission("admin_full_access")),
+    _admin_user: User = Depends(require_admin_user),
 ):
     db = SessionLocal()
     try:
@@ -2182,7 +2315,7 @@ def get_admin_payouts(
 @router.post("/admin/settle-batch/{batch_id}")
 def post_admin_settle_batch(
     batch_id: int,
-    _permission_user: User = Depends(require_permission("admin_full_access")),
+    _admin_user: User = Depends(require_admin_user),
     _reject_impersonation: None = Depends(require_non_impersonation),
 ):
     """Run V2 on-chain settlement for all artists in a finalized/posted batch."""
@@ -2199,7 +2332,7 @@ def post_admin_retry_payout(
     artist_id: Optional[str] = Query(None),
     artist_name: Optional[str] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=500),
-    _permission_user: User = Depends(require_permission("admin_full_access")),
+    _admin_user: User = Depends(require_admin_user),
     _reject_impersonation: None = Depends(require_non_impersonation),
 ):
     raise HTTPException(
@@ -2218,7 +2351,7 @@ def admin_payouts_ui(
     artist_name: Optional[str] = Query(None, description="Filter by artist name"),
     limit: int = Query(50, ge=1, le=500, description="Max rows in table"),
     msg: Optional[str] = Query(None),
-    _permission_user: User = Depends(require_permission("admin_full_access")),
+    _admin_user: User = Depends(require_admin_user),
 ):
     artist_id_int = None
     if artist_id:

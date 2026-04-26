@@ -11,7 +11,7 @@ type RegisterMode = "choice" | "user" | "artist";
 
 export default function RegisterPage() {
   const router = useRouter();
-  const { register, refreshUser } = useAuth();
+  const { register } = useAuth();
   const [mode, setMode] = useState<RegisterMode>("choice");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -49,9 +49,8 @@ export default function RegisterPage() {
               username,
               role: "user" as const,
             };
-      await register(payload);
-      const me = await refreshUser();
-      router.replace(resolveOnboardingRoute(me) ?? "/onboarding");
+      const user = await register(payload);
+      router.replace(resolveOnboardingRoute(user) ?? "/onboarding");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
     } finally {

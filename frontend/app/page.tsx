@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { API_BASE } from "@/lib/publicEnv";
+import { apiFetch } from "@/lib/api";
 
 export default function Home() {
-  const [balance, setBalance] = useState<any>(null);
+  const [balance, setBalance] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
 
   const fetchBalance = () => {
-    fetch(`${API_BASE}/balance`)
+    apiFetch("/balance")
       .then((res) => res.json())
       .then((data) => setBalance(data));
   };
@@ -21,7 +21,7 @@ export default function Home() {
   const handleStream = async () => {
     setLoading(true);
 
-    await fetch(`${API_BASE}/stream`, {
+    await apiFetch("/stream", {
       method: "POST",
     });
 

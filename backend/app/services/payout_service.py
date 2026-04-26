@@ -3,6 +3,7 @@ from app.economics_constants import ARTIST_SHARE
 from app.models.artist import Artist
 from app.models.listening_aggregate import ListeningAggregate
 from app.models.song import Song
+from app.services.slug_service import ensure_artist_slug, ensure_song_slug, update_artist_slug, update_song_slug
 from app.models.user_balance import UserBalance
 from sqlalchemy.exc import IntegrityError
 import math
@@ -49,6 +50,8 @@ def ensure_treasury_entities(db) -> tuple[Artist, Song]:
                 is_system=True,
             )
             db.add(treasury_artist)
+            db.flush()
+            ensure_artist_slug(db, treasury_artist, name_source=TREASURY_ARTIST_NAME)
             try:
                 db.commit()
             except IntegrityError:
@@ -58,15 +61,18 @@ def ensure_treasury_entities(db) -> tuple[Artist, Song]:
         changed = False
         if treasury_artist.name != TREASURY_ARTIST_NAME:
             treasury_artist.name = TREASURY_ARTIST_NAME
+            update_artist_slug(db, treasury_artist, name_source=TREASURY_ARTIST_NAME)
             changed = True
         if not treasury_artist.is_system:
             treasury_artist.is_system = True
             changed = True
         if changed:
+            ensure_artist_slug(db, treasury_artist, name_source=treasury_artist.name)
             db.commit()
 
     if treasury_artist is None:
         raise RuntimeError("Treasury artist missing — system invariant broken")
+    ensure_artist_slug(db, treasury_artist, name_source=treasury_artist.name)
 
     treasury_song = (
         db.query(Song)
@@ -104,6 +110,8 @@ def ensure_treasury_entities(db) -> tuple[Artist, Song]:
                 is_system=True,
             )
             db.add(treasury_song)
+            db.flush()
+            ensure_song_slug(db, treasury_song, title_source=TREASURY_SONG_TITLE)
             try:
                 db.commit()
             except IntegrityError:
@@ -120,15 +128,18 @@ def ensure_treasury_entities(db) -> tuple[Artist, Song]:
             changed = True
         if treasury_song.title != TREASURY_SONG_TITLE:
             treasury_song.title = TREASURY_SONG_TITLE
+            update_song_slug(db, treasury_song, title_source=TREASURY_SONG_TITLE)
             changed = True
         if not treasury_song.is_system:
             treasury_song.is_system = True
             changed = True
         if changed:
+            ensure_song_slug(db, treasury_song, title_source=treasury_song.title)
             db.commit()
 
     if treasury_song is None:
         raise RuntimeError("Treasury song missing — system invariant broken")
+    ensure_song_slug(db, treasury_song, title_source=treasury_song.title)
 
     artist_count = db.query(Artist).filter(Artist.system_key == TREASURY_ARTIST_SYSTEM_KEY).count()
     song_count = db.query(Song).filter(Song.system_key == TREASURY_SONG_SYSTEM_KEY).count()

@@ -6,9 +6,11 @@ from app.core.database import Base
 
 RELEASE_TYPE_SINGLE = "single"
 RELEASE_TYPE_ALBUM = "album"
+RELEASE_TYPE_EP = "ep"
 RELEASE_TYPE_VALUES = (
     RELEASE_TYPE_SINGLE,
     RELEASE_TYPE_ALBUM,
+    RELEASE_TYPE_EP,
 )
 
 RELEASE_STATE_DRAFT = "draft"
@@ -27,6 +29,7 @@ class Release(Base):
     __tablename__ = "releases"
 
     id = Column(Integer, primary_key=True, index=True)
+    slug = Column(String(255), nullable=False, unique=True, index=True)
     title = Column(String(255), nullable=False)
     artist_id = Column(Integer, ForeignKey("artists.id"), nullable=False, index=True)
     type = Column(

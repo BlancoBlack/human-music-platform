@@ -42,7 +42,7 @@ from app.services.rbac_service import (
     get_invalid_user_roles,
     get_user_permissions,
 )
-from app.services.onboarding_state_service import REGISTERED
+from app.services.onboarding_state_service import REGISTERED, validate_onboarding_state
 from app.services.user_service import create_user, normalize_registration_email
 
 logger = logging.getLogger(__name__)
@@ -372,7 +372,7 @@ def auth_me(
         is_email_verified=bool(user.is_email_verified),
         display_name=profile.display_name if profile else None,
         onboarding_completed=bool(user.onboarding_completed),
-        onboarding_step=user.onboarding_step,
+        onboarding_step=validate_onboarding_state(user.onboarding_step),
         sub_role=user.sub_role,
         roles=roles,
         permissions=permissions,

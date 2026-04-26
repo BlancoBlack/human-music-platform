@@ -12,6 +12,7 @@ from app.services.rbac_service import assign_role_to_user
 
 # Dev/seed scripts only — not used for interactive accounts in production.
 SEED_LISTENER_PLACEHOLDER_PASSWORD = "seed-listener-password-do-not-use!!"
+DEFAULT_ONBOARDING_STEP = "REGISTERED"
 
 
 def normalize_registration_email(raw: str | None) -> str:
@@ -42,6 +43,7 @@ def create_user(
     username: str | None = None,
     default_role_name: str | None = "user",
     onboarding_completed: bool = True,
+    onboarding_step: str = DEFAULT_ONBOARDING_STEP,
 ) -> User:
     """Create ``User``, ``UserProfile``, and a default product role in one place.
 
@@ -71,6 +73,7 @@ def create_user(
         is_active=True,
         is_email_verified=False,
         onboarding_completed=bool(onboarding_completed),
+        onboarding_step=onboarding_step,
         username=username,
     )
     db.add(user)

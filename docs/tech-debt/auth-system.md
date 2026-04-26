@@ -10,6 +10,11 @@
 - **httpOnly `hm_refresh_token` cookie** (path **`/auth`**) is used **only** for **`POST /auth/refresh`** (rotate session + set new cookie), **`POST /auth/logout`** (revoke + clear cookie), and responses from **`POST /auth/register`** / **`POST /auth/login`** (set cookie). It is **not** a second identity source for **`/auth/me`**.
 - **Access JWT** is short-lived. It is either a normal **access** token (`typ=access`) or a **dev impersonation** access token (`typ=access_impersonation`); see **Dev impersonation** below.
 
+### Cross-domain roles/onboarding debt
+
+Cross-domain technical debt for role-system duplication (`user` vs `listener`) and onboarding-linked auth/navigation implications is tracked centrally in [roles.md](./roles.md).  
+This file keeps auth/session-specific debt only and does not duplicate those role/onboarding entries.
+
 ### Dev impersonation
 
 - **`POST /auth/dev/impersonate`** is **disabled unless** `APP_ENV`/`ENV` is **`development`** or **`dev`** **and** **`ENABLE_DEV_IMPERSONATION=true`**. In production, keep impersonation **off** (unset or `false`) and do **not** use `development`/`dev` for `APP_ENV` if you rely on this gate.

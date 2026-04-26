@@ -84,3 +84,23 @@ Hash in DB + logs; verification logic exists in Python for tests / worker paths.
 **Priority:** MEDIUM  
 
 **When to address:** When opening payouts to external partners or running public beta with accountability promises.
+
+---
+
+## Economic layer completeness
+
+**Description**  
+Payout and settlement capabilities exist, but full product-grade economics integration and safeguards are not fully unified.
+
+**Why it matters**  
+Partial economics coupling across product flows can produce inconsistent policy behavior and operator confusion.
+
+**Current behavior**  
+Core economics and settlement building blocks are present; cross-flow safeguards are still incomplete.
+
+**Proposed solution**  
+Define and enforce a unified economics contract across onboarding, discovery, creator, and settlement-adjacent flows.
+
+**Priority:** HIGH  
+
+**When to address:** Before expanding payout-critical product behavior.

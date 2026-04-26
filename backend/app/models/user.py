@@ -1,9 +1,16 @@
 from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 
 from app.core.database import Base
+
+VALID_ONBOARDING_STEPS = {
+    "REGISTERED",
+    "PREFERENCES_SET",
+    "DISCOVERY_STARTED",
+    "COMPLETED",
+}
 
 
 class User(Base):
@@ -73,3 +80,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+    @validates("onboarding_step")
+    def validate_onboarding_step(self, key, value):
+        if value is None:
+            raise ValueError("Invalid onboarding_step: None")
+        if value not in VALID_ONBOARDING_STEPS:
+            raise ValueError(f"Invalid onboarding_step: {value}")
+        return value

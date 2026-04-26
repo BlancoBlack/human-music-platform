@@ -6,9 +6,9 @@
  * DO NOT use refresh_token from JSON in browser
  * Cookie is source of truth
  *
- * `/auth/me` runs only from this module, and only after the access token changes:
- * - after login / register (`applyTokens`)
- * - after cookie refresh (`refreshSession`)
+ * `/auth/me` runs from `lib/auth.ts` (`applyTokens`, `getCurrentUser`) and this module:
+ * - after login / register (`applyTokens` → single `/auth/me`)
+ * - after cookie refresh (`refreshSession` → `auth.applyTokens`)
  *
  * Components should read `user` from `useAuth()` — do not call `getCurrentUser()` directly.
  * Use `refreshUser()` when profile/roles may have changed server-side.
@@ -41,11 +41,12 @@ type AuthContextValue = {
   user: UserMe | null;
   accessToken: string | null;
   initializing: boolean;
+  authReady: boolean;
   isAuthenticated: boolean;
   /** True when access JWT is a dev impersonation token (`/auth/me` includes `impersonation`). */
   isImpersonating: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (payload: auth.RegisterPayload) => Promise<auth.RegisterResponse>;
+  login: (email: string, password: string) => Promise<UserMe>;
+  register: (payload: auth.RegisterPayload) => Promise<UserMe>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<boolean>;
   /** One `/auth/me` fetch; use after profile-changing server actions. */
@@ -82,12 +83,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return me;
   }, []);
 
-  const applyTokens = useCallback(
-    async (tokens: auth.TokenResponse) => {
+  const applyTokensFromResponse = useCallback(
+    async (tokens: auth.TokenResponse): Promise<UserMe> => {
       commitAccessToken(tokens.access_token);
-      await syncUserFromMe();
+      const me = await auth.applyTokens(tokens);
+      setUser(me);
+      return me;
     },
-    [commitAccessToken, syncUserFromMe],
+    [commitAccessToken],
   );
 
   const refreshSession = useCallback(async (): Promise<boolean> => {
@@ -99,23 +102,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const tokens = await auth.refreshToken();
         if (!tokens?.access_token) {
           commitAccessToken(null);
+          auth.clearStoredTokens();
           setUser(null);
           return false;
         }
         commitAccessToken(tokens.access_token);
-        const me = await syncUserFromMe();
+        const me = await auth.applyTokens(tokens);
+        setUser(me);
         return me != null;
       } catch (error) {
         console.warn("Refresh failed", error);
         setUser(null);
         commitAccessToken(null);
+        auth.clearStoredTokens();
         return false;
       } finally {
         refreshPromise = null;
       }
     })();
     return refreshPromise;
-  }, [commitAccessToken, syncUserFromMe]);
+  }, [commitAccessToken]);
 
   const refreshUser = useCallback(async () => {
     if (!tokenRef.current) {
@@ -138,8 +144,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     void (async () => {
       try {
-        const ok = await refreshSession();
-        if (!cancelled && !ok) {
+        const storedAccess = auth.getStoredAccessToken();
+        const storedRefresh = auth.getStoredRefreshToken();
+        console.info("[auth] bootstrap", {
+          has_stored_access_token: !!storedAccess,
+          has_stored_refresh_token: !!storedRefresh,
+        });
+        if (storedAccess) {
+          commitAccessToken(storedAccess);
+          const me = await syncUserFromMe();
+          if (!cancelled && me) {
+            setUser(me);
+          }
+          if (!me && storedRefresh) {
+            const ok = await refreshSession();
+            if (!cancelled && !ok) {
+              setUser(null);
+              commitAccessToken(null);
+            }
+          } else if (!me && !storedRefresh) {
+            auth.clearStoredTokens();
+            setUser(null);
+            commitAccessToken(null);
+          }
+        } else if (storedRefresh) {
+          const ok = await refreshSession();
+          if (!cancelled && !ok) {
+            setUser(null);
+            commitAccessToken(null);
+          }
+        } else {
           setUser(null);
           commitAccessToken(null);
         }
@@ -147,6 +181,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!cancelled) {
           setUser(null);
           commitAccessToken(null);
+          auth.clearStoredTokens();
         }
       } finally {
         if (!cancelled) setInitializing(false);
@@ -155,14 +190,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [refreshSession, commitAccessToken]);
+  }, [refreshSession, commitAccessToken, syncUserFromMe]);
 
   const login = useCallback(
     async (email: string, password: string) => {
       const tokens = await auth.login(email, password);
-      await applyTokens(tokens);
+      return applyTokensFromResponse(tokens);
     },
-    [applyTokens],
+    [applyTokensFromResponse],
   );
 
   const register = useCallback(
@@ -173,10 +208,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         refresh_token: response.refresh_token,
         token_type: response.token_type,
       };
-      await applyTokens(tokens);
-      return response;
+      return applyTokensFromResponse(tokens);
     },
-    [applyTokens],
+    [applyTokensFromResponse],
   );
 
   const logout = useCallback(async () => {
@@ -186,6 +220,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn("Logout failed", e);
     }
     commitAccessToken(null);
+    auth.clearStoredTokens();
     setUser(null);
   }, [commitAccessToken]);
 
@@ -203,6 +238,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       accessToken,
       initializing,
+      authReady: !initializing,
       isAuthenticated: user != null && !!accessToken,
       isImpersonating,
       login,

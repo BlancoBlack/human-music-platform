@@ -6,7 +6,7 @@ import { useAuth } from "@/context/AuthContext";
 import { resolveOnboardingRoute } from "@/lib/onboarding";
 
 export function useOnboardingRedirect(enabled = true): {
-  targetRoute: "/onboarding" | "/player" | null;
+  targetRoute: "/onboarding" | null;
   resolving: boolean;
 } {
   const router = useRouter();

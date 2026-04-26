@@ -1196,6 +1196,7 @@ export function UploadWizard({
 
   return (
     <UploadWizardPageLayout>
+      {/* EXPRESSION_LAYER: reserved for future illustration/motion integration */}
       {headerSlot}
       <div className="mb-8 flex items-center justify-between gap-4">
         <div>
@@ -2080,7 +2081,7 @@ export function UploadWizard({
             </button>
           ) : (
             <Link
-              href={`/song/${song.id}`}
+              href={`/track/${song.slug}`}
               className="inline-flex w-full items-center justify-center rounded-lg bg-neutral-900 py-3 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
             >
               View song

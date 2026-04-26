@@ -8,7 +8,7 @@ import { resolveOnboardingRoute } from "@/lib/onboarding";
 
 function LoginForm() {
   const router = useRouter();
-  const { login, refreshUser } = useAuth();
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -19,10 +19,11 @@ function LoginForm() {
     setError(null);
     setPending(true);
     try {
-      await login(email, password);
-      const me = await refreshUser();
-      router.replace(resolveOnboardingRoute(me) ?? "/onboarding");
+      const user = await login(email, password);
+      console.info("[login] success", { email });
+      router.replace(resolveOnboardingRoute(user) ?? "/discovery");
     } catch (err) {
+      console.warn("[login] failed", { email });
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setPending(false);

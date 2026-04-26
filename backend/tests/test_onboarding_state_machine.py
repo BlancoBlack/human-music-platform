@@ -67,7 +67,7 @@ def test_onboarding_state_machine_valid_progression(client_and_session) -> None:
         headers={"Authorization": f"Bearer {token}"},
     )
     assert p.status_code == 200, p.text
-    assert p.json()["onboarding_step"] == "PREFERENCES_SET"
+    assert p.json()["onboarding_step"] == "COMPLETED"
 
     s = client.post(
         "/discovery/first-session",
@@ -131,7 +131,7 @@ def test_onboarding_state_machine_reentrant_endpoints(client_and_session) -> Non
         headers={"Authorization": f"Bearer {token}"},
     )
     assert p1.status_code == 200, p1.text
-    assert p1.json()["onboarding_step"] == "PREFERENCES_SET"
+    assert p1.json()["onboarding_step"] == "COMPLETED"
 
     p2 = client.post(
         "/onboarding/preferences",
@@ -139,7 +139,7 @@ def test_onboarding_state_machine_reentrant_endpoints(client_and_session) -> Non
         headers={"Authorization": f"Bearer {token}"},
     )
     assert p2.status_code == 200, p2.text
-    assert p2.json()["onboarding_step"] == "PREFERENCES_SET"
+    assert p2.json()["onboarding_step"] == "COMPLETED"
 
     s1 = client.post("/discovery/first-session", headers={"Authorization": f"Bearer {token}"})
     assert s1.status_code == 200, s1.text

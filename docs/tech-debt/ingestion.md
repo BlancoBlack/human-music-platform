@@ -126,3 +126,23 @@ If the client supplies `listening_session_id`, the server checks the row exists 
 **Priority:** MEDIUM (optional product fork)  
 
 **When to address:** Only when implementing session-based limits, antifraud, or analytics that must align with `ListeningEvent` semantics.
+
+---
+
+## Stream tracking maturity
+
+**Description**  
+Core listening/event intelligence exists but onboarding success loops are not deeply wired into product activation metrics.
+
+**Why it matters**  
+Without explicit activation instrumentation, onboarding and first-session changes are difficult to evaluate against real retention outcomes.
+
+**Current behavior**  
+Events, sessions, and aggregates are available, but onboarding activation tracking is not yet modeled as a first-class system.
+
+**Proposed solution**  
+Define onboarding activation metrics and wire stream-tracking outputs to those milestones.
+
+**Priority:** HIGH  
+
+**When to address:** Before scaling onboarding optimization work.

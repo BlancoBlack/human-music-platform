@@ -1,4 +1,7 @@
-# Technical Debt
+# Tech debt: Roles, onboarding, and entry flows
+
+This file groups cross-domain technical debt affecting onboarding, roles, and system entry flows.
+Do NOT fragment these issues across multiple tech-debt files.
 
 ## High Priority Issues
 
@@ -40,6 +43,17 @@
   - Keep register/login/onboarding micro-interactions aligned with upload pipeline visual language.
   - Preserve low-friction onboarding while avoiding navigation surprises.
 
+- **Missing slug support outside core entities**
+  - Current clean-slug routing exists for `artist`, `album` (release), and `track` only.
+  - Slug strategy is still missing for:
+    - users
+    - labels
+    - curators
+    - contributors
+    - playlists
+    - editorial posts
+  - Follow-up work should define public URL ownership, mutability policy, history/redirect behavior, and canonical route families for each domain before those entities become SEO-facing.
+
 ## Known Bugs / Risks
 
 - **Forced navigation risk from guard behavior**
@@ -48,17 +62,3 @@
 - **Operational risk in SQLite dev/prod mismatch**
   - Some auth/locking behavior (e.g., refresh row-lock semantics) differs between SQLite and PostgreSQL.
   - Can hide concurrency issues until production-like environments.
-
-## Critical Missing Systems
-
-- **Stream tracking maturity**
-  - Core listening/event intelligence exists but onboarding success loops are not deeply wired into product activation metrics.
-
-- **Economic layer completeness**
-  - Payout and settlement capabilities exist, but full product-grade economics integration and safeguards are not fully unified.
-
-- **Advanced discovery intelligence**
-  - Curation/community/reputation layers are still partial or missing in live pipeline behavior.
-
-- **Artist analytics onboarding bridge**
-  - Creator onboarding does not yet provide a complete guided bridge into analytics milestones and growth feedback loops.

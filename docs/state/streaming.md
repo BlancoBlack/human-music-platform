@@ -34,6 +34,13 @@ Applied **after** the 5s gate, before insert. Computes metadata only; stored on 
 - **`ListeningSessionCheckpoint`**: append-only progress; **does not** drive `validate_listen` or payouts (stated in `listening_checkpoint_service` module docstring).
 - **SQLite trigger** (startup patch in `main.py`): on insert into `listening_events` with `session_id`, updates `listening_sessions.finalized_at`.
 
+### Session lifecycle constraints (SQLAlchemy)
+
+- `POST /stream/start-session` follows strict ORM order: `add` -> `flush` -> persistence/PK checks -> `refresh` -> `commit`.
+- `refresh()` must only run on a **persistent** instance with a generated primary key; calling it on transient/pending rows can raise `InvalidRequestError`.
+- `flush()` is used to force INSERT and PK generation without ending the transaction; `commit()` finalizes after successful refresh.
+- Session creation now logs before/after flush and logs exceptions with rollback, so first-attempt failures are visible and deterministic.
+
 ### Post-commit pipeline
 
 - **RQ**: `queue.enqueue(process_listening_event, event.id)` after successful commit.

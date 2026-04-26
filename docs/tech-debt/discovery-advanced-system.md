@@ -25,6 +25,7 @@ These items are intentionally **not solved** in current discovery:
 - **No cultural context layer:** no graph- or scene-level cultural relationships yet.
 - **No real-time signals:** no live session re-ranking / event-stream feedback loop in discovery response.
 - **Limited personalization signals:** personalization mainly uses aggregate listening + lightweight artist novelty, not deep behavioral/contextual features.
+- **Advanced discovery intelligence:** curation/community/reputation layers are still partial or missing in live pipeline behavior.
 
 ---
 

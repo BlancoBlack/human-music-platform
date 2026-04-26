@@ -5,7 +5,6 @@ import { useMemo, useState } from "react";
 import { UploadWizardPageLayout } from "@/components/UploadWizardPageLayout";
 import { submitOnboardingPreferences } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { resolveOnboardingRoute } from "@/lib/onboarding";
 
 const GENRES = [
   "Hip-Hop",
@@ -48,8 +47,9 @@ export default function OnboardingPage() {
         .map((x) => x.trim())
         .filter(Boolean);
       await submitOnboardingPreferences({ genres: selectedGenres, artists });
-      const me = await refreshUser();
-      router.replace(resolveOnboardingRoute(me) ?? "/onboarding");
+      await refreshUser();
+      // onboarding completion must always lead to discovery (via completion milestone page)
+      router.replace("/user-register-complete");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not continue onboarding");
     } finally {
@@ -92,7 +92,7 @@ export default function OnboardingPage() {
         onClick={onContinue}
         className="mt-6 w-full rounded-lg bg-[#F37D25] px-4 py-3 text-sm font-medium text-black hover:bg-[#F7A364] disabled:opacity-50"
       >
-        {pending ? "Starting session..." : "Start playback"}
+        {pending ? "Preparing your feed..." : "Discover music"}
       </button>
     </UploadWizardPageLayout>
   );

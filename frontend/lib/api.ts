@@ -14,11 +14,15 @@ export async function apiFetch(
   for (const [k, v] of Object.entries(auth)) {
     if (!merged.has(k)) merged.set(k, v);
   }
-  return fetch(url, {
+  const response = await fetch(url, {
     ...init,
     headers: merged,
     credentials: init.credentials ?? "include",
   });
+  if (response.status === 401 || response.status === 403) {
+    console.warn("[api] auth response", { path, status: response.status });
+  }
+  return response;
 }
 
 export type TaxonomyItem = {
@@ -29,6 +33,7 @@ export type TaxonomyItem = {
 
 export type SongDetail = {
   id: number;
+  slug: string;
   title: string;
   artist_id: number;
   upload_status: string;
@@ -114,6 +119,7 @@ export async function deleteSong(songId: number): Promise<void> {
 export type ArtistPublic = {
   id: number;
   name: string;
+  slug: string;
 };
 
 export async function fetchArtist(artistId: number): Promise<ArtistPublic> {
@@ -151,8 +157,11 @@ export type ArtistsSearchResponse = {
 
 export type ArtistCatalogSong = {
   id: number;
+  slug: string;
   title: string;
   artist_id: number;
+  release_id?: number | null;
+  release_slug?: string | null;
   upload_status: string;
   duration_seconds: number | null;
   cover_url: string | null;
@@ -298,6 +307,7 @@ export async function createReleaseDraft(
 
 export type ReleaseTrackRow = {
   id: number;
+  slug: string;
   title: string;
   track_number: number | null;
   state: string;
@@ -326,6 +336,95 @@ export async function fetchReleaseTracks(
     throw new Error(text || `Failed to load tracks for release ${releaseId}`);
   }
   return res.json();
+}
+
+export type ArtistBySlugResponse = {
+  id: number;
+  slug: string;
+  name: string;
+  canonical_url: string;
+  songs: ArtistCatalogSong[];
+};
+
+export async function fetchArtistBySlug(slug: string): Promise<ArtistBySlugResponse> {
+  const res = await apiFetch(`/artist/${encodeURIComponent(slug)}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to load artist ${slug}`);
+  }
+  return res.json();
+}
+
+export type AlbumBySlugResponse = {
+  id: number;
+  slug: string;
+  title: string;
+  type: string;
+  artist: ArtistPublic;
+  release_date: string | null;
+  state: string;
+  canonical_url: string;
+  tracks: ReleaseTrackRow[];
+  progress: ReleaseTracksResponse["progress"];
+};
+
+export async function fetchAlbumBySlug(slug: string): Promise<AlbumBySlugResponse> {
+  const res = await apiFetch(`/album/${encodeURIComponent(slug)}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to load album ${slug}`);
+  }
+  return res.json();
+}
+
+export type TrackBySlugResponse = SongDetail & {
+  artist: ArtistPublic;
+  album: { id: number; slug: string; title: string } | null;
+  canonical_url: string;
+};
+
+export async function fetchTrackBySlug(slug: string): Promise<TrackBySlugResponse> {
+  const res = await apiFetch(`/track/${encodeURIComponent(slug)}`);
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new ApiNotFoundError("Track not found");
+    }
+    const text = await res.text();
+    throw new Error(text || `Failed to load track ${slug}`);
+  }
+  return res.json();
+}
+
+export type AdminPayoutRow = {
+  id: string;
+  batch_id: number;
+  user_id: number | null;
+  artist_id: number;
+  amount: number;
+  status: string;
+  created_at: string | null;
+  attempt_count: number | null;
+  failure_reason: string | null;
+  algorand_tx_id: string | null;
+  destination_wallet: string | null;
+};
+
+export async function fetchAdminPayouts(): Promise<AdminPayoutRow[]> {
+  const res = await apiFetch("/admin/payouts");
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to load admin payouts");
+  }
+  return res.json() as Promise<AdminPayoutRow[]>;
+}
+
+export async function fetchAdminPayoutsUi(): Promise<string> {
+  const res = await apiFetch("/admin/payouts-ui");
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to load admin payouts UI");
+  }
+  return res.text();
 }
 
 export async function uploadReleaseCover(

@@ -15,6 +15,7 @@ from typing import Any, Dict
 from fastapi import HTTPException
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import Session
 
 from app.models.listening_event import ListeningEvent
@@ -54,8 +55,32 @@ def process_start_listening_session(
 
     session = ListeningSession(user_id=user_id, song_id=song_id)
     db.add(session)
-    db.commit()
-    db.refresh(session)
+    logger.info(
+        "listening_session_flush_started",
+        extra={"user_id": user_id, "song_id": song_id},
+    )
+    try:
+        db.flush()
+        logger.info(
+            "listening_session_flush_succeeded",
+            extra={"user_id": user_id, "song_id": song_id, "session_id": session.id},
+        )
+
+        # Refresh only after the ORM instance is persistent and has a PK.
+        if session.id is None:
+            raise RuntimeError("Listening session id was not generated after flush")
+        if not inspect(session).persistent:
+            raise RuntimeError("Listening session is not persistent after flush")
+
+        db.refresh(session)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "listening_session_creation_failed",
+            extra={"user_id": user_id, "song_id": song_id},
+        )
+        raise
     logger.info(
         "listening_session_started",
         extra={"user_id": user_id, "song_id": song_id, "session_id": session.id},

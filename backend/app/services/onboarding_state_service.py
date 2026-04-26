@@ -26,6 +26,10 @@ _ALLOWED_TRANSITIONS: dict[str, str] = {
 }
 
 
+def assert_canonical_onboarding_step(step: str) -> None:
+    assert step in VALID_ONBOARDING_STATES, f"Invalid canonical onboarding step: {step}"
+
+
 def validate_onboarding_state(state: str | None) -> str:
     if state not in VALID_ONBOARDING_STATES:
         raise ValueError("Invalid onboarding state")
@@ -43,6 +47,8 @@ def advance_onboarding_state(current_state: str | None, target_state: str) -> st
     """
     current = validate_onboarding_state(current_state)
     target = validate_onboarding_state(target_state)
+    assert_canonical_onboarding_step(current)
+    assert_canonical_onboarding_step(target)
     allowed_next = _ALLOWED_TRANSITIONS.get(current)
     if allowed_next != target:
         raise ValueError("Invalid onboarding transition")

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.artist import Artist
 from app.models.song import Song
 from app.services.release_service import bind_song_to_release, create_single_release_for_song
+from app.services.slug_service import ensure_song_slug
 from app.services.song_artist_split_service import set_splits_for_song
 from app.services.song_state_service import sync_song_state_from_upload_status
 
@@ -153,6 +154,7 @@ class SongIngestionService:
         sync_song_state_from_upload_status(song)
         db.add(song)
         db.flush()
+        ensure_song_slug(db, song, title_source=cleaned_title)
         if release_id is not None:
             bind_song_to_release(db, song=song, release_id=int(release_id))
         else:
