@@ -42,6 +42,7 @@ export type SongDetail = {
   credits: { name: string; role: string }[];
   splits?: { artist_id: number; share: number }[];
   has_master_audio: boolean;
+  audio_url: string | null;
   has_cover_art: boolean;
   cover_url: string | null;
   genre_id?: number | null;

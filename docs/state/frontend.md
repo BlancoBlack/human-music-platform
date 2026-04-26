@@ -73,6 +73,11 @@ Final guarantee:
 - All frontend API requests must go through `apiFetch` in `frontend/lib/api.ts`.
 - Exception policy: none currently.
 
+## Contract alignment after refactor
+
+- `/player` is removed from onboarding route resolution contract (`resolveOnboardingRoute` returns `"/onboarding"` or `null` only).
+- Onboarding routing model is now: incomplete users route to `/onboarding`; otherwise no forced onboarding redirect target.
+
 ## Expression Layer (NOT IMPLEMENTED)
 
 - No illustration system exists yet.

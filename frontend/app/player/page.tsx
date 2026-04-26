@@ -34,7 +34,7 @@ export default function PlayerPage() {
         if (!cancelled) setTracks(data.tracks || []);
         const me = await refreshUser();
         const route = resolveOnboardingRoute(me);
-        if (!cancelled && route && route !== "/player") {
+        if (!cancelled && route) {
           router.replace(route);
           return;
         }

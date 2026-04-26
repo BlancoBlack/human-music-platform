@@ -167,3 +167,8 @@
 - **User payout preview exposure**: `GET /payout/{user_id}`, `GET /compare/{user_id}`, and `GET /dashboard/{user_id}` do not require JWT auth or ownership checks, so payout/comparison data for arbitrary user ids is queryable.
 - **Mutating route ownership gaps**: `POST /releases`, `POST /releases/{release_id}/upload-cover`, `POST /songs/{song_id}/upload-audio`, and `POST /songs/{song_id}/upload-cover` lack JWT ownership enforcement in route handlers.
 - **Ownership-field inconsistency across write paths**: `POST /songs`, `PATCH|DELETE /songs/{song_id}`, and `PUT /songs/{song_id}/splits` enforce via `artists.user_id`, while `POST /artists/{artist_id}/songs` enforces via `can_edit_artist` on `artists.owner_user_id`; mixed/backfilled data can yield inconsistent allow/deny behavior.
+
+## Contract alignment after refactor
+
+- Admin authorization for `/admin/*` is role-based only via `require_admin_user` (`user_roles.role == "admin"` plus configured `roles.name="admin"`).
+- Permission-based checks like `require_permission("admin_full_access")` remain for non-`/admin/*` flows (e.g. artist payout method) and are not the contract for `/admin/*` endpoints.

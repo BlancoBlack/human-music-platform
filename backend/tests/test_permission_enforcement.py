@@ -42,7 +42,7 @@ def client_and_session():
                 Role(name="user"),
                 Role(name="uploader"),
                 Role(name="artist_editor"),
-                Role(name="admin_role"),
+                Role(name="admin"),
                 Permission(name="upload_music"),
                 Permission(name="edit_own_artist"),
                 Permission(name="admin_full_access"),
@@ -66,11 +66,11 @@ def client_and_session():
                     permission_id=perms["edit_own_artist"],
                 ),
                 RolePermission(
-                    role_id=roles["admin_role"],
+                    role_id=roles["admin"],
                     permission_id=perms["admin_full_access"],
                 ),
                 RolePermission(
-                    role_id=roles["admin_role"],
+                    role_id=roles["admin"],
                     permission_id=perms["upload_music"],
                 ),
             ]
@@ -204,7 +204,7 @@ def test_upload_music_admin_bypasses_ownership(
 
     admin_email = "admin-upload@example.com"
     admin_token = _register_access_token(client, admin_email)
-    _assign_role(SessionFactory, admin_email, "admin_role")
+    _assign_role(SessionFactory, admin_email, "admin")
 
     def _fake_create_song(self, **kwargs):
         return SimpleNamespace(
@@ -228,7 +228,7 @@ def test_upload_music_admin_bypasses_ownership(
     assert body["title"] == "Admin Track"
 
 
-def test_admin_payouts_requires_admin_full_access(client_and_session) -> None:
+def test_admin_payouts_requires_admin_role(client_and_session) -> None:
     client, SessionFactory = client_and_session
     token_denied = _register_access_token(client, "admin-denied@example.com")
     denied = client.get(
@@ -236,11 +236,14 @@ def test_admin_payouts_requires_admin_full_access(client_and_session) -> None:
         headers={"Authorization": f"Bearer {token_denied}"},
     )
     assert denied.status_code == 403
-    assert "admin_full_access" in denied.json()["detail"]
+    assert denied.json()["detail"] in (
+        "Admin role is not configured",
+        "Admin access required",
+    )
 
     email = "admin-allowed@example.com"
     token_allowed = _register_access_token(client, email)
-    _assign_role(SessionFactory, email, "admin_role")
+    _assign_role(SessionFactory, email, "admin")
     allowed = client.get(
         "/admin/payouts",
         headers={"Authorization": f"Bearer {token_allowed}"},
