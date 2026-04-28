@@ -36,6 +36,7 @@ export type SongDetail = {
   slug: string;
   title: string;
   artist_id: number;
+  release_id: number | null;
   upload_status: string;
   duration_seconds: number | null;
   featured_artist_ids: number[];
