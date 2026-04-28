@@ -12,6 +12,12 @@ VALID_ONBOARDING_STEPS = {
     "COMPLETED",
 }
 
+VALID_CONTEXT_TYPES = {
+    "user",
+    "artist",
+    "label",
+}
+
 
 class User(Base):
     """
@@ -40,6 +46,8 @@ class User(Base):
     onboarding_completed = Column(Boolean, nullable=False, default=True)
     onboarding_step = Column(String(64), nullable=True)
     sub_role = Column(String(32), nullable=True)
+    current_context_type = Column(String(16), nullable=True)
+    current_context_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=True, default=datetime.utcnow)
 
     profile = relationship(
@@ -60,11 +68,6 @@ class User(Base):
         secondaryjoin="foreign(UserRole.role) == Role.name",
         viewonly=True,
     )
-    linked_artists = relationship(
-        "Artist",
-        back_populates="user",
-        foreign_keys="Artist.user_id",
-    )
     owned_artists = relationship(
         "Artist",
         back_populates="owner",
@@ -74,6 +77,11 @@ class User(Base):
         "Label",
         back_populates="owner",
         foreign_keys="Label.owner_user_id",
+    )
+    owned_releases = relationship(
+        "Release",
+        foreign_keys="Release.owner_user_id",
+        back_populates="owner",
     )
     refresh_tokens = relationship(
         "RefreshToken",
@@ -87,4 +95,12 @@ class User(Base):
             raise ValueError("Invalid onboarding_step: None")
         if value not in VALID_ONBOARDING_STEPS:
             raise ValueError(f"Invalid onboarding_step: {value}")
+        return value
+
+    @validates("current_context_type")
+    def validate_current_context_type(self, key, value):
+        if value is None:
+            return None
+        if value not in VALID_CONTEXT_TYPES:
+            raise ValueError(f"Invalid current_context_type: {value}")
         return value

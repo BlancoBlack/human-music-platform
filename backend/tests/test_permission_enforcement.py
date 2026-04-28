@@ -40,10 +40,8 @@ def client_and_session():
             [
                 Role(name="listener"),
                 Role(name="user"),
-                Role(name="uploader"),
                 Role(name="artist_editor"),
                 Role(name="admin"),
-                Permission(name="upload_music"),
                 Permission(name="edit_own_artist"),
                 Permission(name="admin_full_access"),
             ]
@@ -54,24 +52,12 @@ def client_and_session():
         db.add_all(
             [
                 RolePermission(
-                    role_id=roles["uploader"],
-                    permission_id=perms["upload_music"],
-                ),
-                RolePermission(
-                    role_id=roles["artist_editor"],
-                    permission_id=perms["upload_music"],
-                ),
-                RolePermission(
                     role_id=roles["artist_editor"],
                     permission_id=perms["edit_own_artist"],
                 ),
                 RolePermission(
                     role_id=roles["admin"],
                     permission_id=perms["admin_full_access"],
-                ),
-                RolePermission(
-                    role_id=roles["admin"],
-                    permission_id=perms["upload_music"],
                 ),
             ]
         )
@@ -132,10 +118,13 @@ def _user_id_by_email(SessionFactory, email: str) -> int:
         db.close()
 
 
-def test_upload_music_requires_permission(client_and_session) -> None:
+def test_legacy_upload_requires_artist_ownership(client_and_session) -> None:
     client, SessionFactory = client_and_session
     token = _register_access_token(client, "no-upload@example.com")
-    artist_id = _create_artist(SessionFactory)
+    owner_email = "legacy-owner@example.com"
+    _register_access_token(client, owner_email)
+    owner_id = _user_id_by_email(SessionFactory, owner_email)
+    artist_id = _create_artist(SessionFactory, owner_user_id=owner_id)
 
     response = client.post(
         f"/artists/{artist_id}/songs",
@@ -144,10 +133,10 @@ def test_upload_music_requires_permission(client_and_session) -> None:
         files={"file": ("audio.wav", b"fake", "audio/wav")},
     )
     assert response.status_code == 403
-    assert "upload_music" in response.json()["detail"]
+    assert response.json()["detail"] == "Not owner of this artist"
 
 
-def test_upload_music_permission_without_ownership_forbidden(
+def test_legacy_upload_non_owner_forbidden(
     monkeypatch: pytest.MonkeyPatch, client_and_session
 ) -> None:
     client, SessionFactory = client_and_session
@@ -178,7 +167,10 @@ def test_upload_music_permission_without_ownership_forbidden(
         files={"file": ("audio.wav", b"fake", "audio/wav")},
     )
     assert response.status_code == 403
-    assert "Not allowed to modify this artist" in response.json()["detail"]
+    assert response.json()["detail"] in (
+        "Not allowed to modify this artist",
+        "Not owner of this artist",
+    )
 
     # Owner path still works with same permissions.
     owner_response = client.post(
@@ -193,7 +185,7 @@ def test_upload_music_permission_without_ownership_forbidden(
     assert body["title"] == "Owner Track"
 
 
-def test_upload_music_admin_bypasses_ownership(
+def test_legacy_upload_admin_bypasses_ownership(
     monkeypatch: pytest.MonkeyPatch, client_and_session
 ) -> None:
     client, SessionFactory = client_and_session

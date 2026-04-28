@@ -25,5 +25,6 @@ class SongArtistSplit(Base):
 
     song_id = Column(Integer, ForeignKey("songs.id"), nullable=False)
     artist_id = Column(Integer, ForeignKey("artists.id"), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
     share = Column(Float, nullable=False)  # e.g. 0.7; must sum to 1.0 per song (app-enforced)
     split_bps = Column(Integer, nullable=False)  # basis points; must sum to 10000 per song (app-enforced)

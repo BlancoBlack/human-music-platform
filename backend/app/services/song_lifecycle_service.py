@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.artist import Artist
 from app.models.song import Song
 from app.models.user import User
+from app.services.artist_access_service import get_artist_owner_id
 
 
 class SongNotFoundError(Exception):
@@ -32,8 +33,8 @@ def assert_user_owns_song(db: Session, user: User, song_id: int) -> Song:
     artist = db.query(Artist).filter(Artist.id == int(song.artist_id)).first()
     if artist is None:
         raise SongOwnershipError("Artist not found for this song.")
-    uid = getattr(artist, "user_id", None)
-    if uid is None or int(uid) != int(user.id):
+    owner_id = get_artist_owner_id(artist)
+    if owner_id is None or int(owner_id) != int(user.id):
         raise SongOwnershipError("You can only modify songs you own.")
     return song
 

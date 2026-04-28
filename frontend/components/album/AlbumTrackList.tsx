@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { UploadWizardPageLayout } from "@/components/UploadWizardPageLayout";
 import {
   fetchReleaseTracks,
+  postStudioReleasePublish,
   type ReleaseTrackRow,
   type ReleaseTracksResponse,
 } from "@/lib/api";
@@ -33,7 +35,10 @@ export function AlbumTrackList({
   onAddTrack,
   onEditTrack,
 }: Props) {
+  const router = useRouter();
   const [data, setData] = useState<ReleaseTracksResponse | null>(null);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -55,10 +60,31 @@ export function AlbumTrackList({
     void load();
   }, [load]);
 
+  const publishAlbum = useCallback(async () => {
+    setPublishError(null);
+    setPublishBusy(true);
+    try {
+      await postStudioReleasePublish(releaseId);
+      router.push("/studio/catalog");
+    } catch (e) {
+      setPublishError(
+        e instanceof Error ? e.message : "Could not publish album.",
+      );
+    } finally {
+      setPublishBusy(false);
+    }
+  }, [releaseId, router]);
+
   const tracks = data?.tracks ?? [];
   const n = tracks.length;
   const nextIndex = Math.max(n + 1, 1);
   const nextCount = Math.max(n + 1, 1);
+  const totalTracks = data?.progress.total_tracks ?? 0;
+  const incompleteTracks = data?.progress.incomplete_tracks ?? 0;
+  const emptyTracks = data?.progress.empty_tracks ?? 0;
+  const minimumTracksMissing = Math.max(0, 2 - totalTracks);
+  const albumReadyForPublish =
+    totalTracks >= 2 && incompleteTracks === 0 && emptyTracks === 0;
 
   return (
     <UploadWizardPageLayout>
@@ -85,6 +111,22 @@ export function AlbumTrackList({
 
       {!loading && data && (
         <section className="rounded-xl border border-neutral-200 p-6 dark:border-neutral-800">
+          <div className="mb-4 space-y-1 text-sm">
+            <p className="text-neutral-700 dark:text-neutral-300">
+              Tracks:{" "}
+              <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                {data.progress.total_tracks}
+              </span>
+            </p>
+            <p className="text-neutral-600 dark:text-neutral-400">
+              {albumReadyForPublish
+                ? "Your album is ready to publish."
+                : minimumTracksMissing > 0
+                  ? `Add at least ${minimumTracksMissing} more track${minimumTracksMissing === 1 ? "" : "s"} to publish.`
+                  : "Complete all tracks to publish your album."}
+            </p>
+          </div>
+
           <ol className="space-y-3">
             {tracks.map((t, i) => (
               <li
@@ -136,7 +178,23 @@ export function AlbumTrackList({
             >
               Refresh list
             </button>
+            <button
+              type="button"
+              disabled={publishBusy}
+              className="rounded-lg bg-[#F37D25] px-4 py-2.5 text-sm font-medium text-black disabled:opacity-60"
+              onClick={() => {
+                void publishAlbum();
+              }}
+            >
+              {publishBusy ? "Publishing…" : "Publish album"}
+            </button>
           </div>
+
+          {publishError ? (
+            <p className="mt-3 text-sm text-red-600 dark:text-red-400" role="alert">
+              {publishError}
+            </p>
+          ) : null}
 
           <p className="mt-4 text-xs text-neutral-500 dark:text-neutral-400">
             Progress: {data.progress.completed_tracks} complete ·{" "}

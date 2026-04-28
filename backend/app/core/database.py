@@ -105,6 +105,7 @@ from app.models import (
     label,
     song_artist_split,
     release,
+    release_participant,
     release_slug_history,
     release_media_asset,
     genre,

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.artist import Artist
 from app.models.release import (
+    RELEASE_APPROVAL_STATUS_DRAFT,
     RELEASE_STATE_PUBLISHED,
     RELEASE_STATE_SCHEDULED,
     RELEASE_STATE_DRAFT,
@@ -24,10 +25,11 @@ from app.models.release_media_asset import (
 from app.models.song import SONG_STATE_READY_FOR_RELEASE
 from app.models.song import Song
 from app.models.song_media_asset import (
-    SONG_MEDIA_KIND_COVER_ART,
     SONG_MEDIA_KIND_MASTER_AUDIO,
     SongMediaAsset,
 )
+from app.services.release_participant_service import sync_release_participants
+from app.services.release_approval_service import refresh_release_approval_status
 from app.services.slug_service import ensure_release_slug
 
 logger = logging.getLogger(__name__)
@@ -103,6 +105,7 @@ def create_release(
     release_type: str,
     release_date: datetime,
     discoverable_at: datetime | None = None,
+    owner_user_id: int | None = None,
 ) -> Release:
     cleaned_title = (title or "").strip()
     if not cleaned_title:
@@ -120,10 +123,15 @@ def create_release(
         release_date=release_date,
         discoverable_at=discoverable_at,
         state=RELEASE_STATE_DRAFT,
+        approval_status=RELEASE_APPROVAL_STATUS_DRAFT,
+        split_version=1,
+        owner_user_id=int(owner_user_id) if owner_user_id is not None else None,
     )
     db.add(release)
     db.flush()
     ensure_release_slug(db, release, title_source=cleaned_title)
+    sync_release_participants(db, int(release.id), commit=False)
+    refresh_release_approval_status(db, release_id=int(release.id))
     db.commit()
     db.refresh(release)
     return release
@@ -134,7 +142,7 @@ def get_release_tracks(db: Session, release_id: int) -> list[dict]:
     if release is None:
         raise ValueError(f"Release {release_id} not found.")
 
-    album_cover_ok = release.type == RELEASE_TYPE_ALBUM and (
+    release_cover_ok = (
         db.query(ReleaseMediaAsset.id)
         .filter(
             ReleaseMediaAsset.release_id == int(release_id),
@@ -157,24 +165,20 @@ def get_release_tracks(db: Session, release_id: int) -> list[dict]:
     if not songs:
         return []
 
-    song_ids = [int(s.id) for s in songs]
     asset_rows = (
         db.query(SongMediaAsset.song_id, SongMediaAsset.kind)
         .filter(
-            SongMediaAsset.song_id.in_(song_ids),
-            SongMediaAsset.kind.in_([SONG_MEDIA_KIND_MASTER_AUDIO, SONG_MEDIA_KIND_COVER_ART]),
+            SongMediaAsset.song_id.in_([int(s.id) for s in songs]),
+            SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO,
         )
         .all()
     )
 
     master_ids: set[int] = set()
-    cover_ids: set[int] = set()
     for sid, kind in asset_rows:
         sid_i = int(sid)
         if kind == SONG_MEDIA_KIND_MASTER_AUDIO:
             master_ids.add(sid_i)
-        elif kind == SONG_MEDIA_KIND_COVER_ART:
-            cover_ids.add(sid_i)
 
     tracks: list[dict] = []
     for song in songs:
@@ -187,10 +191,7 @@ def get_release_tracks(db: Session, release_id: int) -> list[dict]:
             completion_status = "incomplete"
 
         sid = int(song.id)
-        if release.type == RELEASE_TYPE_ALBUM:
-            has_cover_art = bool(album_cover_ok)
-        else:
-            has_cover_art = sid in cover_ids
+        has_cover_art = bool(release_cover_ok)
         tracks.append(
             {
                 "id": sid,
@@ -366,6 +367,10 @@ def bind_song_to_release(db: Session, *, song: Song, release_id: int) -> None:
         db.add(s)
         db.flush()
 
+    sync_release_participants(db, target_rid, commit=False)
+    if prev_rid is not None and prev_rid != target_rid:
+        sync_release_participants(db, prev_rid, commit=False)
+
 
 def attach_song_to_release(db: Session, *, song_id: int, release_id: int) -> Song:
     song = (
@@ -473,6 +478,8 @@ def publish_release(db: Session, *, release_id: int) -> Release:
             extra={"release_id": int(release_id), "errors": errors},
         )
         raise ValueError("Release is not publishable: " + " | ".join(errors))
+    if str(release.approval_status or "") != "ready":
+        raise ValueError("Release cannot be published until all split participants approve")
 
     now = datetime.now(UTC)
     discoverable_at = release.release_date or now
@@ -561,6 +568,13 @@ def create_single_release_for_song(
         type=RELEASE_TYPE_SINGLE,
         release_date=when,
         state=RELEASE_STATE_DRAFT,
+        approval_status=RELEASE_APPROVAL_STATUS_DRAFT,
+        split_version=1,
+        owner_user_id=(
+            int(song.artist.owner_user_id)
+            if getattr(song, "artist", None) is not None and song.artist.owner_user_id is not None
+            else None
+        ),
     )
     db.add(release)
     db.flush()

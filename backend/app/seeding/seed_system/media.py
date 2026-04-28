@@ -5,14 +5,17 @@ import hashlib
 from sqlalchemy.orm import Session
 
 from app.models.artist import Artist
+from app.models.release_media_asset import (
+    RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+    ReleaseMediaAsset,
+)
 from app.models.song import Song
-from app.models.song_artist_split import SongArtistSplit
 from app.models.song_credit_entry import SongCreditEntry
 from app.models.song_media_asset import (
-    SONG_MEDIA_KIND_COVER_ART,
     SONG_MEDIA_KIND_MASTER_AUDIO,
     SongMediaAsset,
 )
+from app.services.song_artist_split_service import set_splits_for_song
 
 
 def ensure_song_credits_splits_and_media(
@@ -24,10 +27,20 @@ def ensure_song_credits_splits_and_media(
     cover_path: str,
 ) -> None:
     for song in songs:
+        if song.release_id is None:
+            raise RuntimeError(
+                f"Seed lifecycle violation: song {int(song.id)} missing release_id before media stage."
+            )
         artist = artists_by_id[int(song.artist_id)]
         _ensure_song_credits(db, song=song, artist=artist)
-        _ensure_song_split(db, song=song)
-        _ensure_song_media(db, song=song, master_path=master_path, cover_path=cover_path)
+        set_splits_for_song(
+            db,
+            int(song.id),
+            [{"artist_id": int(song.artist_id), "share": 1.0}],
+            commit=False,
+        )
+        _ensure_song_media(db, song=song, master_path=master_path)
+        _ensure_release_cover(db, song=song, cover_path=cover_path)
 
 
 def _ensure_song_credits(db: Session, *, song: Song, artist: Artist) -> None:
@@ -58,53 +71,52 @@ def _ensure_song_credits(db: Session, *, song: Song, artist: Artist) -> None:
             row.role = role
 
 
-def _ensure_song_split(db: Session, *, song: Song) -> None:
+def _ensure_song_media(db: Session, *, song: Song, master_path: str) -> None:
+    kind = SONG_MEDIA_KIND_MASTER_AUDIO
+    path = master_path
+    mime = "audio/wav"
+    sha = hashlib.sha256(f"{song.id}:{kind}:{path}".encode("utf-8")).hexdigest()
     row = (
-        db.query(SongArtistSplit)
+        db.query(SongMediaAsset)
+        .filter(SongMediaAsset.song_id == int(song.id), SongMediaAsset.kind == kind)
+        .one_or_none()
+    )
+    if row is None:
+        db.add(
+            SongMediaAsset(
+                song_id=int(song.id),
+                kind=kind,
+                file_path=path,
+                mime_type=mime,
+                byte_size=2048,
+                sha256=sha,
+            )
+        )
+    else:
+        row.file_path = path
+        row.mime_type = mime
+        row.byte_size = 2048
+        row.sha256 = sha
+
+
+def _ensure_release_cover(db: Session, *, song: Song, cover_path: str) -> None:
+    if song.release_id is None:
+        return
+    row = (
+        db.query(ReleaseMediaAsset)
         .filter(
-            SongArtistSplit.song_id == int(song.id),
-            SongArtistSplit.artist_id == int(song.artist_id),
+            ReleaseMediaAsset.release_id == int(song.release_id),
+            ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
         )
         .one_or_none()
     )
     if row is None:
         db.add(
-            SongArtistSplit(
-                song_id=int(song.id),
-                artist_id=int(song.artist_id),
-                share=1.0,
-                split_bps=10000,
+            ReleaseMediaAsset(
+                release_id=int(song.release_id),
+                asset_type=RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+                file_path=str(cover_path),
             )
         )
     else:
-        row.share = 1.0
-        row.split_bps = 10000
-
-
-def _ensure_song_media(db: Session, *, song: Song, master_path: str, cover_path: str) -> None:
-    for kind, path, mime in (
-        (SONG_MEDIA_KIND_MASTER_AUDIO, master_path, "audio/wav"),
-        (SONG_MEDIA_KIND_COVER_ART, cover_path, "image/png"),
-    ):
-        sha = hashlib.sha256(f"{song.id}:{kind}:{path}".encode("utf-8")).hexdigest()
-        row = (
-            db.query(SongMediaAsset)
-            .filter(SongMediaAsset.song_id == int(song.id), SongMediaAsset.kind == kind)
-            .one_or_none()
-        )
-        if row is None:
-            db.add(
-                SongMediaAsset(
-                    song_id=int(song.id),
-                    kind=kind,
-                    file_path=path,
-                    mime_type=mime,
-                    byte_size=2048,
-                    sha256=sha,
-                )
-            )
-        else:
-            row.file_path = path
-            row.mime_type = mime
-            row.byte_size = 2048
-            row.sha256 = sha
+        row.file_path = str(cover_path)

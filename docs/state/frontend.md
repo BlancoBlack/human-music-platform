@@ -18,6 +18,8 @@
 - **Post-login navigation**: `frontend/app/login/page.tsx` uses `router.replace(resolveOnboardingRoute(user) ?? "/discovery")` so users without an enforced onboarding target land on **Discovery**, not `/player`.
 - **Post-register navigation**: `frontend/app/register/page.tsx` uses `router.replace(resolveOnboardingRoute(user) ?? "/onboarding")` to preserve the explicit registration -> onboarding contract.
 - **Player routing model**: `/player` is fully excluded from onboarding-guard scope and is never used as an onboarding/default fallback destination (`frontend/app/player/page.tsx` falls back to `"/discovery"` after explicit play-completion transitions).
+- Single cover upload in `frontend/components/UploadWizard.tsx` uses `POST /releases/{release_id}/upload-cover` when `release_id` is available, with temporary compatibility fallback to `POST /songs/{song_id}/upload-cover` when missing.
+- Album setup default release date in `frontend/components/album/AlbumReleaseSetupForm.tsx` is initialized to current time minus 30 minutes (`new Date(); setMinutes(getMinutes() - 30)`), preserving the existing `datetime-local` ISO formatting pipeline and improving recency consistency with single uploads.
 
 ## PARTIALLY IMPLEMENTED
 
@@ -77,6 +79,172 @@ Final guarantee:
 
 - `/player` is removed from onboarding route resolution contract (`resolveOnboardingRoute` returns `"/onboarding"` or `null` only).
 - Onboarding routing model is now: incomplete users route to `/onboarding`; otherwise no forced onboarding redirect target.
+
+## State Management Patterns (Hooks)
+
+### Forbidden pattern
+
+```ts
+useEffect(() => {
+  setLoading(true); // forbidden
+  fetchData().then(...);
+}, []);
+```
+
+Why this is forbidden:
+- It adds avoidable extra renders by synchronously writing state as soon as the effect starts.
+- It blurs React's dataflow model by using effects for state orchestration rather than side effects.
+- It triggers `react-hooks/set-state-in-effect` lint violations.
+- It increases risk of racey updates when async work resolves after navigation/unmount.
+
+### Canonical patterns
+
+#### 1) Event-driven state (inputs/search)
+
+- Update immediate UI state in event handlers (`onChange`, button handlers).
+- Keep effects for async side effects only (debounced search, fetch callbacks).
+
+```ts
+const [query, setQuery] = useState("");
+const [results, setResults] = useState<Item[]>([]);
+const [loading, setLoading] = useState(false);
+
+const onChange = (value: string) => {
+  setQuery(value);
+  if (value.trim().length < 2) {
+    setResults([]);
+    setLoading(false);
+  } else {
+    setResults([]);
+    setLoading(true);
+  }
+};
+
+useEffect(() => {
+  const q = query.trim();
+  if (q.length < 2) return;
+  let cancelled = false;
+  void search(q)
+    .then((items) => {
+      if (!cancelled) setResults(items);
+    })
+    .catch(() => {
+      if (!cancelled) setResults([]);
+    })
+    .finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+  return () => {
+    cancelled = true;
+  };
+}, [query]);
+```
+
+#### 2) Fetch-driven state (pages)
+
+- Initialize loading via `useState` once.
+- Effect performs async work only.
+- Write state only from async resolution (`then/catch/finally` or `await` path).
+- Always include cancellation cleanup.
+
+```ts
+type State =
+  | { kind: "loading" }
+  | { kind: "ready"; data: Data }
+  | { kind: "error"; message: string };
+
+const [state, setState] = useState<State>({ kind: "loading" });
+
+useEffect(() => {
+  if (!slug.trim()) return;
+  let cancelled = false;
+  void fetchBySlug(slug)
+    .then((data) => {
+      if (!cancelled) setState({ kind: "ready", data });
+    })
+    .catch((e) => {
+      if (!cancelled) {
+        setState({
+          kind: "error",
+          message: e instanceof Error ? e.message : "Load failed.",
+        });
+      }
+    });
+  return () => {
+    cancelled = true;
+  };
+}, [slug]);
+```
+
+### Cancellation pattern
+
+```ts
+let cancelled = false;
+
+async function load() {
+  const data = await fetchSomething();
+  if (!cancelled) setState(data);
+}
+
+return () => {
+  cancelled = true;
+};
+```
+
+Why this is required:
+- Prevents state writes on unmounted components.
+- Avoids stale async responses overwriting newer UI state.
+- Keeps page transitions safe under slow or flaky network conditions.
+
+### Design principles
+
+- Effects are for side effects, not synchronous state orchestration.
+- No synchronous `setState` at effect start.
+- UI state should be predictable from current inputs + async outcomes.
+
+### Real Anti-Patterns (from this project)
+
+- `frontend/components/UploadWizard.tsx`
+  - What was wrong: search effects synchronously reset state (`setSearchResults`, `setSearchLoading`) at effect start.
+  - Correct pattern: immediate reset/loading now happens in `onChange`; the effect only performs async search resolution.
+
+- `frontend/app/discovery/page.tsx`
+  - What was wrong: page fetch effect used synchronous `setLoading(true)` at top.
+  - Correct pattern: loading is initialized in `useState`; effect performs fetch and only writes state in async callbacks.
+
+- `frontend/app/album/[slug]/page.tsx`, `frontend/app/artist/[slug]/page.tsx`, `frontend/app/track/[slug]/page.tsx`
+  - What was wrong: redundant `setState({ kind: "loading" })` at effect start despite loading already being initial state.
+  - Correct pattern: remove redundant sync setter; keep state transitions in async success/error paths only.
+
+### Lint Mental Rule (MUST FOLLOW)
+
+```ts
+useEffect(() => {
+  setSomething(...); // almost always wrong
+}, []);
+```
+
+If you ever write a synchronous `setState` at the top of a `useEffect`:
+
+-> STOP
+
+Ask:
+- Can this be derived from initial state?
+- Can this be triggered by a user action instead?
+- Should this happen only after async resolution?
+
+Remember:
+- Effects are not for orchestrating state.
+- Effects are for async side effects and subscriptions.
+
+### Quick Checklist
+
+Before writing a `useEffect`:
+- Am I setting state synchronously? -> probably wrong.
+- Can this be moved to `useState` initial value? -> preferred.
+- Is this tied to user input? -> use an event handler.
+- Is this async work? -> effect is fine.
+- Do I need cancellation? -> usually yes.
 
 ## Expression Layer (NOT IMPLEMENTED)
 

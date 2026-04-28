@@ -13,9 +13,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.artist import Artist
+from app.models.release_media_asset import (
+    RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+    ReleaseMediaAsset,
+)
 from app.models.song import Song
 from app.models.song_media_asset import (
-    SONG_MEDIA_KIND_COVER_ART,
     SONG_MEDIA_KIND_MASTER_AUDIO,
     SongMediaAsset,
 )
@@ -85,19 +88,17 @@ def _valid_master_audio(asset: SongMediaAsset | None) -> bool:
     return bool(str(fp).strip())
 
 
-def _pick_assets(assets: list[SongMediaAsset]) -> tuple[dict[int, SongMediaAsset], dict[int, SongMediaAsset]]:
-    """First asset per (song_id, kind) by minimum ``SongMediaAsset.id`` (deterministic)."""
+def _pick_master_assets(assets: list[SongMediaAsset]) -> dict[int, SongMediaAsset]:
+    """First master-audio asset per song by minimum ``SongMediaAsset.id``."""
     masters: dict[int, SongMediaAsset] = {}
-    covers: dict[int, SongMediaAsset] = {}
     for a in assets:
-        if a.kind not in (SONG_MEDIA_KIND_MASTER_AUDIO, SONG_MEDIA_KIND_COVER_ART):
+        if a.kind != SONG_MEDIA_KIND_MASTER_AUDIO:
             continue
         sid = int(a.song_id)
-        bucket = masters if a.kind == SONG_MEDIA_KIND_MASTER_AUDIO else covers
-        cur = bucket.get(sid)
+        cur = masters.get(sid)
         if cur is None or int(a.id) < int(cur.id):
-            bucket[sid] = a
-    return masters, covers
+            masters[sid] = a
+    return masters
 
 
 def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int, dict], bool]:
@@ -128,13 +129,37 @@ def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int,
         db.query(SongMediaAsset)
         .filter(
             SongMediaAsset.song_id.in_(union_ids),
-            SongMediaAsset.kind.in_(
-                (SONG_MEDIA_KIND_MASTER_AUDIO, SONG_MEDIA_KIND_COVER_ART),
-            ),
+            SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO,
         )
         .all()
     )
-    masters, covers = _pick_assets(list(asset_rows))
+    masters = _pick_master_assets(list(asset_rows))
+
+    release_ids = {
+        int(song.release_id)
+        for song, _artist_name in song_rows
+        if song.release_id is not None
+    }
+    release_cover_map: dict[int, str] = {}
+    if release_ids:
+        release_cover_rows = (
+            db.query(ReleaseMediaAsset.release_id, ReleaseMediaAsset.file_path)
+            .filter(
+                ReleaseMediaAsset.release_id.in_(release_ids),
+                ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+            )
+            .all()
+        )
+        for release_id, file_path in release_cover_rows:
+            rid = int(release_id)
+            if rid in release_cover_map:
+                continue
+            if file_path is None:
+                continue
+            path = str(file_path).strip()
+            if not path:
+                continue
+            release_cover_map[rid] = path
 
     for sid in union_ids:
         tup = song_by_id.get(sid)
@@ -152,7 +177,9 @@ def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int,
         an = (str(artist_name).strip() if artist_name is not None else "") or UNKNOWN_ARTIST
 
         master = masters.get(sid)
-        cover = covers.get(sid)
+        release_cover_path = None
+        if song.release_id is not None:
+            release_cover_path = release_cover_map.get(int(song.release_id))
         valid_master = _valid_master_audio(master)
         upload_ready = str(song.upload_status or "") == "ready"
         playable = bool(upload_ready and valid_master)
@@ -162,7 +189,7 @@ def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int,
 
         # Never expose raw file_path — only public URL helper output.
         audio_raw = public_media_url_from_stored_path(master.file_path if master else None)
-        cover_raw = public_media_url_from_stored_path(cover.file_path if cover else None)
+        cover_raw = public_media_url_from_stored_path(release_cover_path)
 
         row = {
             "id": sid,

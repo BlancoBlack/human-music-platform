@@ -29,7 +29,6 @@ ROLE_NAMES = (
 )
 
 PERMISSION_NAMES = (
-    "upload_music",
     "edit_own_artist",
     "edit_any_artist",
     "view_analytics",
@@ -41,8 +40,8 @@ PERMISSION_NAMES = (
 
 ROLE_PERMISSION_MAP: dict[str, tuple[str, ...]] = {
     "admin": PERMISSION_NAMES,
-    "artist": ("upload_music", "edit_own_artist", "view_analytics"),
-    "label": ("manage_artists", "upload_music", "view_analytics"),
+    "artist": ("edit_own_artist", "view_analytics"),
+    "label": ("manage_artists", "view_analytics"),
     "curator": ("create_playlist", "write_article"),
     "user": (),
     "moderator": (),

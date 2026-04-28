@@ -1,4 +1,4 @@
-"""Tests for 2-step song media uploads (master audio + cover)."""
+"""Tests for song media upload service (audio + deprecated song-cover write)."""
 
 from __future__ import annotations
 
@@ -8,26 +8,19 @@ import tempfile
 import unittest
 import wave
 
-from PIL import Image
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 from app.core.database import Base
 from app.models.artist import Artist
 from app.models.song import Song
-from app.models.song_media_asset import (
-    SONG_MEDIA_KIND_COVER_ART,
-    SONG_MEDIA_KIND_MASTER_AUDIO,
-    SongMediaAsset,
-)
+from app.models.song_media_asset import SONG_MEDIA_KIND_MASTER_AUDIO, SongMediaAsset
 from app.services import song_media_upload_service as smu
 from app.services.song_media_upload_service import (
-    CoverResolutionInvalidError,
     MasterAudioImmutableError,
     WavFileTooLargeError,
     build_master_wav_storage_filename,
     compute_pipeline_upload_status,
-    upload_song_cover_art,
     upload_song_master_audio,
 )
 
@@ -49,12 +42,6 @@ def _minimal_wav_one_second() -> bytes:
         wf.setsampwidth(2)
         wf.setframerate(44100)
         wf.writeframes(b"\x00\x00" * 44100)
-    return buf.getvalue()
-
-
-def _valid_cover_png_bytes() -> bytes:
-    buf = io.BytesIO()
-    Image.new("RGB", (1400, 1400), (10, 20, 30)).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -87,7 +74,7 @@ class MasterWavFilenameTests(unittest.TestCase):
 
 
 class ComputeUploadStatusTests(unittest.TestCase):
-    def test_matrix(self) -> None:
+    def test_matrix_audio_and_cover_flag_combinations(self) -> None:
         self.assertEqual(
             compute_pipeline_upload_status(has_master_audio=False, has_cover_art=False),
             "draft",
@@ -135,7 +122,7 @@ class SongMediaUploadIntegrationTests(unittest.TestCase):
 
         shutil.rmtree(self._tmp_root, ignore_errors=True)
 
-    def test_audio_then_cover_status_and_assets(self) -> None:
+    def test_audio_upload_status_and_asset_row(self) -> None:
         db = self.Session()
         try:
             wav = _minimal_wav_one_second()
@@ -160,41 +147,6 @@ class SongMediaUploadIntegrationTests(unittest.TestCase):
             assert ma is not None
             self.assertEqual(ma.byte_size, len(wav))
             self.assertEqual(len(ma.sha256), 64)
-
-            png = _valid_cover_png_bytes()
-            upload_song_cover_art(
-                db,
-                1,
-                io.BytesIO(png),
-                original_filename="c.png",
-                content_type="image/png",
-            )
-            db.refresh(song)
-            self.assertEqual(song.upload_status, "ready")
-            ca = (
-                db.query(SongMediaAsset)
-                .filter_by(song_id=1, kind=SONG_MEDIA_KIND_COVER_ART)
-                .first()
-            )
-            assert ca is not None
-            self.assertTrue(ca.file_path.endswith("1.png"))
-        finally:
-            db.close()
-
-    def test_cover_too_small_rejected(self) -> None:
-        db = self.Session()
-        try:
-            buf = io.BytesIO()
-            Image.new("RGB", (100, 100), (0, 0, 0)).save(buf, format="PNG")
-            tiny = buf.getvalue()
-            with self.assertRaises(CoverResolutionInvalidError):
-                upload_song_cover_art(
-                    db,
-                    1,
-                    io.BytesIO(tiny),
-                    original_filename="c.png",
-                    content_type="image/png",
-                )
         finally:
             db.close()
 
@@ -240,46 +192,6 @@ class SongMediaUploadIntegrationTests(unittest.TestCase):
                 )
         finally:
             db.close()
-
-    def test_cover_can_be_replaced(self) -> None:
-        db = self.Session()
-        try:
-            wav = _minimal_wav_one_second()
-            upload_song_master_audio(
-                db,
-                1,
-                io.BytesIO(wav),
-                original_filename="m.wav",
-                content_type="audio/wav",
-            )
-            png1 = _valid_cover_png_bytes()
-            upload_song_cover_art(
-                db,
-                1,
-                io.BytesIO(png1),
-                original_filename="c1.png",
-                content_type="image/png",
-            )
-            buf = io.BytesIO()
-            Image.new("RGB", (1600, 1600), (200, 0, 0)).save(buf, format="PNG")
-            png2 = buf.getvalue()
-            upload_song_cover_art(
-                db,
-                1,
-                io.BytesIO(png2),
-                original_filename="c2.png",
-                content_type="image/png",
-            )
-            ca = (
-                db.query(SongMediaAsset)
-                .filter_by(song_id=1, kind=SONG_MEDIA_KIND_COVER_ART)
-                .first()
-            )
-            assert ca is not None
-            self.assertEqual(ca.byte_size, len(png2))
-        finally:
-            db.close()
-
 
 if __name__ == "__main__":
     unittest.main()

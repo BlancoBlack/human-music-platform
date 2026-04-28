@@ -267,28 +267,25 @@ function DiscoveryRow({
 
 export default function DiscoveryPage() {
   const searchParams = useSearchParams();
-  const [data, setData] = useState<DiscoveryResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [showReadyBanner, setShowReadyBanner] = useState(false);
   const fromOnboarding = useMemo(
     () => searchParams.get("from") === "onboarding",
     [searchParams],
   );
+  const [data, setData] = useState<DiscoveryResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showReadyBanner, setShowReadyBanner] = useState(fromOnboarding);
 
   useEffect(() => {
-    if (!fromOnboarding) return;
-    setShowReadyBanner(true);
+    if (!fromOnboarding || !showReadyBanner) return;
     const timeoutId = window.setTimeout(() => {
       setShowReadyBanner(false);
     }, 4500);
     return () => window.clearTimeout(timeoutId);
-  }, [fromOnboarding]);
+  }, [fromOnboarding, showReadyBanner]);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
     void fetchDiscoveryHome()
       .then((res) => {
         if (!cancelled) setData(res);

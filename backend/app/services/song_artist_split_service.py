@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session
 
 from app.models.song import Song
 from app.models.song_artist_split import SongArtistSplit
+from app.models.release import Release
+from app.services.release_participant_service import sync_release_participants
 from app.services.song_split_validation import SplitValidationError, validate_song_splits
 
 
@@ -105,6 +107,13 @@ def set_splits_for_song(
 
     # Enforce strict bps invariants for finance-grade payouts.
     bps_by_artist = _allocate_split_bps_from_shares(splits)
+    current_version_row = (
+        db.query(SongArtistSplit.version)
+        .filter(SongArtistSplit.song_id == int(song_id))
+        .order_by(SongArtistSplit.version.desc())
+        .first()
+    )
+    next_version = int(current_version_row[0]) + 1 if current_version_row else 1
 
     db.query(SongArtistSplit).filter(SongArtistSplit.song_id == song_id).delete(
         synchronize_session=False
@@ -118,11 +127,23 @@ def set_splits_for_song(
         entity = SongArtistSplit(
             song_id=song_id,
             artist_id=artist_id,
+            version=next_version,
             share=share,
             split_bps=split_bps,
         )
         db.add(entity)
         created.append(entity)
+
+    if song.release_id is not None:
+        release = (
+            db.query(Release)
+            .filter(Release.id == int(song.release_id))
+            .first()
+        )
+        if release is not None:
+            release.split_version = int(release.split_version or 1) + 1
+            db.add(release)
+        sync_release_participants(db, int(song.release_id), commit=False)
 
     if commit:
         db.commit()

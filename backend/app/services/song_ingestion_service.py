@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import io
-from pathlib import Path
-import re
-import wave
 from typing import Any
+import wave
 
 from sqlalchemy.orm import Session
 
 from app.models.artist import Artist
 from app.models.song import Song
 from app.services.release_service import bind_song_to_release, create_single_release_for_song
+from app.services.release_participant_service import sync_release_participants
 from app.services.slug_service import ensure_song_slug
 from app.services.song_artist_split_service import set_splits_for_song
 from app.services.song_state_service import sync_song_state_from_upload_status
@@ -26,14 +25,6 @@ _WAV_FORMAT_HINT = "16-bit or 24-bit PCM, 44100 Hz recommended"
 
 def _wav_validation_error(prefix: str) -> ValueError:
     return ValueError(f"{prefix} ({_WAV_FORMAT_HINT})")
-
-
-def _slugify(text: str) -> str:
-    lowered = (text or "").strip().lower()
-    spaced = re.sub(r"\s+", "_", lowered)
-    cleaned = re.sub(r"[^a-z0-9_]", "", spaced)
-    compact = re.sub(r"_+", "_", cleaned).strip("_")
-    return compact or "unknown"
 
 
 def _normalize_content_type(content_type: str | None) -> str | None:
@@ -143,9 +134,6 @@ class SongIngestionService:
         if artist is None:
             raise ValueError(f"Artist {artist_id} not found.")
 
-        audio_bytes = _read_upload_bytes(file)
-        duration_seconds = _validate_wav_bytes(audio_bytes)
-
         song = Song(
             artist_id=int(artist_id),
             title=cleaned_title,
@@ -159,21 +147,8 @@ class SongIngestionService:
             bind_song_to_release(db, song=song, release_id=int(release_id))
         else:
             create_single_release_for_song(db, song=song)
-        db.commit()
-        db.refresh(song)
-
-        uploads_dir = Path("uploads") / "songs"
-        uploads_dir.mkdir(parents=True, exist_ok=True)
-        artist_slug = _slugify(getattr(artist, "name", ""))
-        title_slug = _slugify(cleaned_title)
-        filename = f"{artist_slug}__{title_slug}__{int(song.id)}.wav"
-        target_path = uploads_dir / filename
-        target_path.write_bytes(audio_bytes)
-
-        song.file_path = str(target_path)
-        song.upload_status = "uploaded"
-        sync_song_state_from_upload_status(song)
-        db.add(song)
+        if song.release_id is not None:
+            sync_release_participants(db, int(song.release_id), commit=False)
         db.commit()
         db.refresh(song)
 
@@ -187,11 +162,15 @@ class SongIngestionService:
             splits=share_rows,
         )
 
-        song.duration_seconds = duration_seconds
-        song.upload_status = "published"
-        sync_song_state_from_upload_status(song)
-        db.add(song)
-        db.commit()
+        from app.services.song_media_upload_service import upload_song_master_audio
+
+        upload_song_master_audio(
+            db,
+            int(song.id),
+            file,
+            original_filename=original_filename,
+            content_type=content_type,
+        )
         db.refresh(song)
         return song
 

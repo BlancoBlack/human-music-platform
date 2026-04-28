@@ -27,6 +27,11 @@ from app.api.discovery_routes import router as discovery_router
 from app.api.onboarding_routes import router as onboarding_router
 from app.api.routes import router
 from app.core.database import Base, DB_PATH, SessionLocal, engine
+from app.core.sqlite_migration_utils import (
+    check_migration_safety,
+    get_foreign_keys_pragma,
+    is_sqlite,
+)
 from app.core.sqlite_compat import (
     ensure_auth_user_schema,
     ensure_refresh_token_schema,
@@ -71,6 +76,54 @@ class DevOriginWarningMiddleware(BaseHTTPMiddleware):
                 origin,
             )
         return await call_next(request)
+
+
+def _sqlite_foreign_keys_enabled_now() -> bool:
+    if not is_sqlite(engine):
+        return True
+    with engine.connect() as conn:
+        return bool(get_foreign_keys_pragma(conn))
+
+
+class SQLiteForeignKeysWarningMiddleware(BaseHTTPMiddleware):
+    """
+    Lightweight dev/runtime guard: periodically re-check SQLite FK pragma.
+    """
+
+    _request_count: int = 0
+    _check_every: int = 200
+    _fk_off_since_request: int | None = None
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if not is_sqlite(engine):
+            return response
+        SQLiteForeignKeysWarningMiddleware._request_count += 1
+        if (
+            SQLiteForeignKeysWarningMiddleware._request_count
+            % SQLiteForeignKeysWarningMiddleware._check_every
+            == 0
+        ):
+            try:
+                if not _sqlite_foreign_keys_enabled_now():
+                    if SQLiteForeignKeysWarningMiddleware._fk_off_since_request is None:
+                        SQLiteForeignKeysWarningMiddleware._fk_off_since_request = (
+                            SQLiteForeignKeysWarningMiddleware._request_count
+                        )
+                    off_for = (
+                        SQLiteForeignKeysWarningMiddleware._request_count
+                        - SQLiteForeignKeysWarningMiddleware._fk_off_since_request
+                    )
+                    logger.warning(
+                        "SQLite foreign_keys are OFF during runtime — this may indicate a migration issue. "
+                        "off_for_requests=%s",
+                        off_for,
+                    )
+                else:
+                    SQLiteForeignKeysWarningMiddleware._fk_off_since_request = None
+            except Exception:
+                logger.exception("SQLite foreign_keys runtime check failed")
+        return response
 
 
 app = FastAPI(
@@ -118,6 +171,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(DevOriginWarningMiddleware)
+app.add_middleware(SQLiteForeignKeysWarningMiddleware)
 
 
 def _column_exists(conn, table_name: str, column_name: str) -> bool:
@@ -187,10 +241,13 @@ def _alembic_head_revision() -> str:
 
 
 def _attempt_dev_auto_migration() -> None:
-    if not _is_development_env():
+    if not _is_development_env() or not _env_truthy("ENABLE_AUTO_MIGRATION", "false"):
         return
     logger.info("development_auto_migration_start", extra={"target": "head"})
     try:
+        with engine.connect() as conn:
+            if is_sqlite(conn):
+                check_migration_safety(conn)
         cfg = _alembic_config()
         # Prevent Alembic env.py from reconfiguring global logging inside app startup.
         cfg.attributes["skip_logging_config"] = True
@@ -220,16 +277,41 @@ def _assert_schema_is_current() -> None:
     with engine.connect() as conn:
         revisions = _current_alembic_revisions(conn)
     if not revisions:
-        raise RuntimeError(
-            "Database schema is not initialized by Alembic. "
-            "Run: `cd backend && .venv/bin/alembic upgrade head`"
+        logger.warning(
+            "Database schema is not initialized by Alembic. Run: `cd backend && .venv/bin/alembic upgrade head`"
         )
+        return
     if len(revisions) != 1 or revisions[0] != head:
-        raise RuntimeError(
-            "Database schema is outdated. "
-            f"Current alembic revision(s): {revisions}; head: {head}. "
-            "Run: `cd backend && .venv/bin/alembic upgrade head`"
+        logger.warning(
+            "Database is not up to date. Current alembic revision(s): %s; head: %s. "
+            "Run: `cd backend && .venv/bin/alembic upgrade head`",
+            revisions,
+            head,
         )
+        return
+
+
+def _maybe_bootstrap_empty_dev_sqlite_db() -> None:
+    """
+    Dev-only fallback for a freshly deleted local SQLite DB.
+
+    If no Alembic revision exists yet and core tables are missing, create the
+    minimum schema needed for app startup invariants.
+    """
+    if not _is_development_env() or not is_sqlite(engine):
+        return
+    with engine.connect() as conn:
+        revisions = _current_alembic_revisions(conn)
+        has_artists_table = inspect(conn).has_table("artists")
+    if revisions or has_artists_table:
+        return
+    logger.warning(
+        "Detected empty development SQLite DB with no Alembic revision. "
+        "Running Alembic upgrade head automatically."
+    )
+    cfg = _alembic_config()
+    cfg.attributes["skip_logging_config"] = True
+    alembic_command.upgrade(cfg, "head")
 
 
 def _sanitized_database_url(raw_url: str) -> str:
@@ -445,6 +527,10 @@ def startup_init() -> None:
             ),
         },
     )
+    if is_sqlite(engine) and not _sqlite_foreign_keys_enabled_now():
+        logger.warning(
+            "SQLite foreign_keys are OFF at startup — this may indicate a migration issue."
+        )
     if _schema_bootstrap_enabled():
         logger.warning(
             "ALLOW_SCHEMA_BOOTSTRAP is enabled. "
@@ -464,6 +550,7 @@ def startup_init() -> None:
     else:
         _attempt_dev_auto_migration()
         _assert_schema_is_current()
+        _maybe_bootstrap_empty_dev_sqlite_db()
     db = SessionLocal()
     try:
         ensure_treasury_entities(db)

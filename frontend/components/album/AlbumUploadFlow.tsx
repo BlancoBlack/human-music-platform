@@ -20,9 +20,13 @@ type EditorContext = {
 
 type Props = {
   artistId: number;
+  uploadBasePath?: string;
 };
 
-export function AlbumUploadFlow({ artistId }: Props) {
+export function AlbumUploadFlow({
+  artistId,
+  uploadBasePath = "/artist-upload",
+}: Props) {
   const [step, setStep] = useState<AlbumFlowStep>("setup");
   const [releaseId, setReleaseId] = useState<number | null>(null);
   const [releaseTitle, setReleaseTitle] = useState("");
@@ -31,7 +35,7 @@ export function AlbumUploadFlow({ artistId }: Props) {
   const header = (
     <div className="mb-8 flex flex-wrap items-center gap-3">
       <Link
-        href={`/artist-upload?artist_id=${artistId}`}
+        href={`${uploadBasePath}?flow=album`}
         className="text-sm text-neutral-600 underline-offset-2 hover:underline dark:text-neutral-400"
       >
         ← Back to upload type
@@ -110,6 +114,18 @@ export function AlbumUploadFlow({ artistId }: Props) {
             setEditor(null);
             setStep("tracks");
           }}
+          onAlbumTrackNext={() => {
+            setEditor((prev) => {
+              if (prev == null) return prev;
+              const nextIndex = Math.max(prev.trackIndex + 1, prev.trackCount + 1);
+              return {
+                songId: null,
+                trackIndex: nextIndex,
+                trackCount: nextIndex,
+              };
+            });
+            setStep("editor");
+          }}
         />
       </div>
     );
@@ -119,7 +135,7 @@ export function AlbumUploadFlow({ artistId }: Props) {
     <UploadWizardPageLayout>
       {header}
       <p className="text-sm text-red-600">Something went wrong. Start over.</p>
-      <Link href="/artist-upload" className="mt-4 inline-block text-sm underline">
+      <Link href={uploadBasePath} className="mt-4 inline-block text-sm underline">
         Artist upload
       </Link>
     </UploadWizardPageLayout>

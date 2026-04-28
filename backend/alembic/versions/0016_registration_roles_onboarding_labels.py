@@ -11,6 +11,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from app.core.sqlite_migration_utils import safe_sqlite_batch_op
 
 revision: str = "0016_registration_roles_onboarding_labels"
 down_revision: Union[str, Sequence[str], None] = "0015_artist_owner_user_id"
@@ -103,7 +104,8 @@ def downgrade() -> None:
     user_cols = _column_names(bind, "users")
     if "onboarding_completed" in user_cols:
         if bind.dialect.name == "sqlite":
-            with op.batch_alter_table("users") as batch_op:
+            def _revert_users(batch_op) -> None:
                 batch_op.drop_column("onboarding_completed")
+            safe_sqlite_batch_op(op, "users", _revert_users)
         else:
             op.drop_column("users", "onboarding_completed")

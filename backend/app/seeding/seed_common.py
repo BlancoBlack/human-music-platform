@@ -30,6 +30,12 @@ from app.models.payout_batch import PayoutBatch
 from app.models.payout_input_snapshot import PayoutInputSnapshot
 from app.models.payout_line import PayoutLine
 from app.models.payout_settlement import PayoutSettlement
+from app.models.release import (
+    RELEASE_APPROVAL_STATUS_DRAFT,
+    RELEASE_STATE_DRAFT,
+    RELEASE_TYPE_SINGLE,
+    Release,
+)
 from app.models.snapshot_listening_input import SnapshotListeningInput
 from app.models.snapshot_user_pool import SnapshotUserPool
 from app.models.song import Song
@@ -47,7 +53,7 @@ from app.services.user_service import (
     SEED_LISTENER_PLACEHOLDER_PASSWORD,
     create_user,
 )
-from app.services.slug_service import ensure_artist_slug, ensure_song_slug
+from app.services.slug_service import ensure_artist_slug, ensure_release_slug, ensure_song_slug
 from app.workers.listen_worker import process_listening_event
 
 DEFAULT_TOTAL_EVENTS = 5000
@@ -269,13 +275,19 @@ def _upsert_artists(artist_names: Sequence[str] | None = None) -> list[Artist]:
     db = SessionLocal()
     out: list[Artist] = []
     try:
+        seed_owner = db.query(User.id).order_by(User.id.asc()).first()
+        if seed_owner is None:
+            raise RuntimeError("Cannot seed artists without at least one user row.")
+        seed_owner_id = int(seed_owner[0])
         for idx, name in enumerate(names, start=1):
             artist = db.query(Artist).filter(Artist.name == name).first()
             if artist is None:
-                artist = Artist(name=name, owner_user_id=None)
+                artist = Artist(name=name, owner_user_id=seed_owner_id)
                 db.add(artist)
                 db.flush()
                 ensure_artist_slug(db, artist, name_source=name)
+            elif artist.owner_user_id is None:
+                artist.owner_user_id = seed_owner_id
             artist.payout_method = "crypto"
             current_wallet = (artist.payout_wallet_address or "").strip()
             if (not current_wallet) or (current_wallet == _LEGACY_SEED_WALLET_PLACEHOLDER):
@@ -319,6 +331,32 @@ def _upsert_songs(
     db = SessionLocal()
     out: list[Song] = []
     try:
+        def _ensure_single_release_id(*, artist_id: int, song_title: str) -> int:
+            release_title = f"{song_title} — Single"
+            release = (
+                db.query(Release)
+                .filter(
+                    Release.artist_id == int(artist_id),
+                    Release.type == RELEASE_TYPE_SINGLE,
+                    Release.title == release_title,
+                )
+                .one_or_none()
+            )
+            if release is None:
+                release = Release(
+                    title=release_title,
+                    artist_id=int(artist_id),
+                    type=RELEASE_TYPE_SINGLE,
+                    release_date=datetime.utcnow(),
+                    state=RELEASE_STATE_DRAFT,
+                    approval_status=RELEASE_APPROVAL_STATUS_DRAFT,
+                    split_version=1,
+                )
+                db.add(release)
+                db.flush()
+                ensure_release_slug(db, release, title_source=release_title)
+            return int(release.id)
+
         artist_ids_set = {int(a.id) for a in artists}
         if title_artist_id_pairs is None:
             if len(artists) < 2:
@@ -326,14 +364,22 @@ def _upsert_songs(
             artist_ids = [int(a.id) for a in artists]
             for idx, title in enumerate(_SONG_TITLES, start=1):
                 artist_id = artist_ids[0] if idx <= 3 else artist_ids[1]
+                release_id = _ensure_single_release_id(artist_id=artist_id, song_title=title)
                 song = db.query(Song).filter(Song.title == title).first()
                 if song is None:
-                    song = Song(title=title, artist_id=artist_id)
+                    song = Song(title=title, artist_id=artist_id, release_id=release_id)
                     db.add(song)
                     db.flush()
                     ensure_song_slug(db, song, title_source=title)
                 else:
                     song.artist_id = artist_id
+                    current_state = getattr(song.state, "value", song.state)
+                    if int(song.release_id or 0) != int(release_id) and str(current_state or "") == "ready_for_release":
+                        raise RuntimeError(
+                            f"Seed lifecycle violation: song {int(song.id)} is ready_for_release "
+                            "and cannot change release membership."
+                        )
+                    song.release_id = release_id
                 if not (song.system_key or "").strip():
                     song.system_key = f"seed.song.{idx}"
                 out.append(song)
@@ -344,14 +390,22 @@ def _upsert_songs(
                 aid = int(artist_id)
                 if aid not in artist_ids_set:
                     raise RuntimeError(f"artist_id {aid} not in seed artist list for title {title!r}")
+                release_id = _ensure_single_release_id(artist_id=aid, song_title=title)
                 song = db.query(Song).filter(Song.title == title).first()
                 if song is None:
-                    song = Song(title=title, artist_id=aid)
+                    song = Song(title=title, artist_id=aid, release_id=release_id)
                     db.add(song)
                     db.flush()
                     ensure_song_slug(db, song, title_source=title)
                 else:
                     song.artist_id = aid
+                    current_state = getattr(song.state, "value", song.state)
+                    if int(song.release_id or 0) != int(release_id) and str(current_state or "") == "ready_for_release":
+                        raise RuntimeError(
+                            f"Seed lifecycle violation: song {int(song.id)} is ready_for_release "
+                            "and cannot change release membership."
+                        )
+                    song.release_id = release_id
                 if not (song.system_key or "").strip():
                     song.system_key = f"seed.song.{idx}"
                 out.append(song)

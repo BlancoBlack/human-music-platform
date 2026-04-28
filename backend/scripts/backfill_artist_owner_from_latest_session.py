@@ -25,7 +25,7 @@ def _infer_user_id(conn: sqlite3.Connection) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Assign non-system artists with NULL user_id to a dev user."
+        description="Assign non-system artists with NULL owner_user_id to a dev user."
     )
     parser.add_argument(
         "--db",
@@ -51,14 +51,14 @@ def main() -> None:
             """
             SELECT COUNT(*)
             FROM artists
-            WHERE COALESCE(is_system, 0) = 0 AND user_id IS NULL
+            WHERE COALESCE(is_system, 0) = 0 AND owner_user_id IS NULL
             """
         ).fetchone()[0]
         conn.execute(
             """
             UPDATE artists
-            SET user_id = ?
-            WHERE COALESCE(is_system, 0) = 0 AND user_id IS NULL
+            SET owner_user_id = ?
+            WHERE COALESCE(is_system, 0) = 0 AND owner_user_id IS NULL
             """,
             (user_id,),
         )
@@ -67,12 +67,12 @@ def main() -> None:
             """
             SELECT COUNT(*)
             FROM artists
-            WHERE COALESCE(is_system, 0) = 0 AND user_id IS NULL
+            WHERE COALESCE(is_system, 0) = 0 AND owner_user_id IS NULL
             """
         ).fetchone()[0]
         print(
-            f"Assigned {before - after} artist rows to user_id={user_id}. "
-            f"Remaining NULL upload artists: {after}."
+            f"Assigned {before - after} artist rows to owner_user_id={user_id}. "
+            f"Remaining NULL owner artists: {after}."
         )
     finally:
         conn.close()

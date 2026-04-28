@@ -73,7 +73,16 @@ def upsert_artist_songs(
         else:
             row.title = str(spec["title"])
             row.artist_id = int(artist.id)
-            row.release_id = int(release.id)
+            target_release_id = int(release.id)
+            current_release_id = int(row.release_id or 0)
+            if current_release_id != target_release_id:
+                current_state = getattr(row.state, "value", row.state)
+                if str(current_state or "") == "ready_for_release":
+                    raise RuntimeError(
+                        f"Seed lifecycle violation: song {int(row.id)} is ready_for_release "
+                        "and cannot change release membership."
+                    )
+                row.release_id = target_release_id
             row.track_number = track_idx
             row.genre_id = genre_id
             row.subgenre_id = subgenre_id

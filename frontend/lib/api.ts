@@ -156,6 +156,48 @@ export type ArtistsSearchResponse = {
   artists: ArtistPublic[];
 };
 
+export type GlobalSearchArtistResult = {
+  type: "artist";
+  id: number;
+  name: string;
+  slug: string;
+};
+
+export type GlobalSearchTrackResult = {
+  type: "track";
+  id: number;
+  title: string;
+  slug: string;
+  artist: ArtistPublic;
+  album: { id: number; title: string; slug: string } | null;
+};
+
+export type GlobalSearchAlbumResult = {
+  type: "album";
+  id: number;
+  title: string;
+  slug: string;
+  artist: ArtistPublic;
+};
+
+export type GlobalSearchResult =
+  | GlobalSearchArtistResult
+  | GlobalSearchTrackResult
+  | GlobalSearchAlbumResult;
+
+export type GlobalSearchResponse = {
+  results: GlobalSearchResult[];
+  groups: {
+    artists: GlobalSearchArtistResult[];
+    tracks: GlobalSearchTrackResult[];
+    albums: GlobalSearchAlbumResult[];
+  };
+  meta: {
+    query: string;
+    limit: number;
+  };
+};
+
 export type ArtistCatalogSong = {
   id: number;
   slug: string;
@@ -197,6 +239,19 @@ export async function searchArtists(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || "Artist search failed");
+  }
+  return res.json();
+}
+
+export async function searchGlobal(
+  q: string,
+  limit = 10,
+): Promise<GlobalSearchResponse> {
+  const params = new URLSearchParams({ q, limit: String(limit) });
+  const res = await apiFetch(`/search?${params}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Global search failed");
   }
   return res.json();
 }
@@ -517,4 +572,332 @@ export async function parseErrorPayload(res: Response): Promise<{
     /* ignore */
   }
   return { detail: text || res.statusText };
+}
+
+export type StudioArtistRef = {
+  id: number;
+  name: string;
+};
+
+export type StudioReleaseSummary = {
+  id: number;
+  title: string;
+  cover_url: string | null;
+  artist: StudioArtistRef;
+  type: "single" | "ep" | "album";
+  created_at: string | null;
+  track_count: number;
+  split_version: number;
+};
+
+export type StudioPendingSummary = {
+  split: number;
+  feature: number;
+};
+
+export type StudioPendingListParticipant = {
+  artist_id: number;
+  artist_name: string;
+  role: "primary" | "collaborator" | "featured";
+  status: "pending" | "accepted" | "rejected";
+  approval_type: "split" | "feature" | "none";
+  blocking: boolean;
+  is_actionable_for_user: boolean;
+};
+
+export type StudioPendingListItem = {
+  release: StudioReleaseSummary;
+  approval_status: "draft" | "pending_approvals" | "ready";
+  pending_summary: StudioPendingSummary;
+  participants: StudioPendingListParticipant[];
+};
+
+export type StudioSongFeaturedArtist = {
+  artist_id: number;
+  artist_name: string;
+};
+
+export type StudioSongCredit = {
+  name: string;
+  role: string;
+};
+
+export type StudioSong = {
+  id: number;
+  title: string;
+  primary_artist_id: number;
+  featured_artists: StudioSongFeaturedArtist[];
+  credits: StudioSongCredit[];
+};
+
+export type StudioSplit = {
+  artist_id: number;
+  artist_name: string;
+  share: number;
+};
+
+export type StudioParticipant = {
+  artist_id: number;
+  artist_name: string;
+  role: "primary" | "collaborator" | "featured";
+  status: "pending" | "accepted" | "rejected";
+  approval_type: "split" | "feature" | "none";
+  requires_approval: boolean;
+  blocking: boolean;
+  is_actionable_for_user: boolean;
+  has_feature_context: boolean;
+  rejection_reason: string | null;
+  approved_at: string | null;
+};
+
+export type StudioReleaseDetail = {
+  release: StudioReleaseSummary & {
+    approval_status: "draft" | "pending_approvals" | "ready";
+    genres: string[];
+    moods: string[];
+    location: string | null;
+  };
+  user_context: {
+    owned_artist_ids: number[];
+    pending_actions_count: number;
+  };
+  songs: StudioSong[];
+  splits: StudioSplit[];
+  participants: StudioParticipant[];
+  pending_summary: StudioPendingSummary;
+};
+
+export type StudioApprovalActionBody = {
+  artist_id: number;
+  reason?: string;
+};
+
+export type StudioApprovalActionResponse = {
+  status: "accepted" | "rejected";
+  updated_participant: {
+    artist_id: number;
+    role: "primary" | "collaborator" | "featured";
+    approval_type: "split" | "feature" | "none";
+    blocking: boolean;
+    status: "pending" | "accepted" | "rejected";
+    rejection_reason: string | null;
+    approved_at: string | null;
+  };
+  release_approval_status: "draft" | "pending_approvals" | "ready" | null;
+};
+
+export type StudioContextRef = { type: "user" | "artist" | "label"; id: number };
+
+export type StudioMeResponse = {
+  user: { id: number; email: string | null };
+  allowed_contexts: {
+    artists: { id: number; name: string; slug: string }[];
+    labels: { id: number; name: string }[];
+  };
+  current_context: StudioContextRef;
+};
+
+export async function fetchStudioMe(): Promise<StudioMeResponse> {
+  const res = await apiFetch("/studio/me");
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || "Failed to load studio context");
+  }
+  return res.json();
+}
+
+export type ArtistDashboardLastPayout = {
+  batch_id: number;
+  payout_date: string | null;
+  amount: number;
+};
+
+export type ArtistDashboardEarningsPerSong = {
+  song_id: number;
+  total: number;
+  paid: number;
+  pending: number;
+};
+
+export type ArtistDashboardPayoutRow = {
+  song_id: number;
+  amount: number;
+  status: string;
+};
+
+export type ArtistDashboardResponse = {
+  artist_id: number;
+  total: number;
+  paid: number;
+  accrued: number;
+  failed_settlement: number;
+  pending: number;
+  spotify_total: number;
+  difference: number;
+  earnings_per_song: ArtistDashboardEarningsPerSong[];
+  top_songs: ArtistDashboardEarningsPerSong[];
+  last_payouts: ArtistDashboardLastPayout[];
+  payouts: ArtistDashboardPayoutRow[];
+};
+
+export async function fetchStudioArtistDashboard(
+  artistId: number,
+): Promise<ArtistDashboardResponse> {
+  const res = await apiFetch(`/studio/${artistId}/dashboard`);
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || `Failed to load dashboard for artist ${artistId}`);
+  }
+  return res.json();
+}
+
+export type ArtistInsightStoryType =
+  | "no_songs"
+  | "no_streams"
+  | "early_listeners"
+  | "first_fans"
+  | "first_replays"
+  | "fan_engagement"
+  | "top_fan_week"
+  | "fans_reached"
+  | (string & {});
+
+export type ArtistInsightStory = {
+  type: ArtistInsightStoryType;
+  priority: number;
+  message: string;
+  data: Record<string, unknown>;
+};
+
+export type ArtistInsightsResponse = {
+  range: string;
+  stories: ArtistInsightStory[];
+};
+
+export async function fetchArtistInsights(
+  artistId: number,
+  range: string = "last_30_days",
+): Promise<ArtistInsightsResponse> {
+  const params = new URLSearchParams({ range });
+  const res = await apiFetch(`/artist/${artistId}/insights?${params}`);
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || `Failed to load insights for artist ${artistId}`);
+  }
+  return res.json();
+}
+
+export type StudioCatalogSort = "top" | "new" | "old";
+
+export type StudioCatalogRelease = {
+  id: number;
+  slug: string;
+  title: string;
+  type: string;
+  release_date: string | null;
+  cover_url: string | null;
+};
+
+export type StudioCatalogTrack = {
+  id: number;
+  slug: string;
+  title: string;
+  artist_name: string;
+  duration_seconds: number | null;
+  release_date: string | null;
+  stream_count: number;
+  cover_url: string | null;
+  audio_url: string | null;
+  playable: boolean;
+};
+
+export type StudioCatalogResponse = {
+  artist_id: number;
+  sort: StudioCatalogSort;
+  releases: StudioCatalogRelease[];
+  tracks: StudioCatalogTrack[];
+};
+
+export async function fetchStudioCatalog(
+  artistId: number,
+  sort: StudioCatalogSort = "top",
+): Promise<StudioCatalogResponse> {
+  const params = new URLSearchParams({ sort });
+  const res = await apiFetch(`/studio/${artistId}/catalog?${params}`);
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || `Failed to load catalog for artist ${artistId}`);
+  }
+  return res.json();
+}
+
+export async function fetchStudioPendingApprovalsList(): Promise<StudioPendingListItem[]> {
+  const res = await apiFetch("/studio/pending-approvals?view=list");
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || "Failed to load pending approvals");
+  }
+  return res.json();
+}
+
+export type StudioReleasePublishResponse = {
+  release_id: number;
+  state: "published" | "scheduled" | string;
+  discoverable_at: string | null;
+};
+
+export async function postStudioReleasePublish(
+  releaseId: number,
+): Promise<StudioReleasePublishResponse> {
+  const res = await apiFetch(`/studio/releases/${releaseId}/publish`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || "Publish request failed");
+  }
+  return res.json();
+}
+
+export async function fetchStudioReleaseDetail(
+  releaseId: number,
+): Promise<StudioReleaseDetail> {
+  const res = await apiFetch(`/studio/releases/${releaseId}`);
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || `Failed to load release ${releaseId}`);
+  }
+  return res.json();
+}
+
+export async function postStudioReleaseApprove(
+  releaseId: number,
+  body: StudioApprovalActionBody,
+): Promise<StudioApprovalActionResponse> {
+  const res = await apiFetch(`/studio/releases/${releaseId}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || "Approval request failed");
+  }
+  return res.json();
+}
+
+export async function postStudioReleaseReject(
+  releaseId: number,
+  body: StudioApprovalActionBody,
+): Promise<StudioApprovalActionResponse> {
+  const res = await apiFetch(`/studio/releases/${releaseId}/reject`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || "Rejection request failed");
+  }
+  return res.json();
 }

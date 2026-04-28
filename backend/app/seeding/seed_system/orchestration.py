@@ -33,7 +33,7 @@ from app.seeding.seed_system.media import ensure_song_credits_splits_and_media
 from app.seeding.seed_system.payouts import build_snapshot_and_payouts, validate_payouts
 from app.seeding.seed_system.releases import ReleaseTemplate, upsert_artist_releases
 from app.seeding.seed_system.songs import resolve_seed_genre_ids, upsert_artist_songs
-from app.seeding.seed_system.users import upsert_seed_users
+from app.seeding.seed_system.users import SEED_ADMIN_EMAIL, upsert_seed_users
 from app.services.payout_service import ensure_treasury_entities
 
 
@@ -48,9 +48,18 @@ def run_seed_system(*, reset: bool, scale: str, rng_seed: int = 42, policy_id: s
     db = SessionLocal()
     try:
         ensure_treasury_entities(db)
+        users = upsert_seed_users(db, USER_PROFILES)
+        admin_row = db.query(User).filter(User.email == SEED_ADMIN_EMAIL).one_or_none()
+        treasury_artist = (
+            db.query(Artist)
+            .filter(Artist.system_key == "TREASURY")
+            .one_or_none()
+        )
+        if admin_row is not None and treasury_artist is not None:
+            treasury_artist.owner_user_id = int(admin_row.id)
+            db.add(treasury_artist)
         db.commit()
 
-        users = upsert_seed_users(db, USER_PROFILES)
         artists = upsert_seed_artists(db, users=users, artist_names=ARTIST_NAMES, wallet_address=WALLET_ADDRESS)
         genre_id, subgenre_id = resolve_seed_genre_ids(db)
         all_songs: list[Song] = []
@@ -184,6 +193,40 @@ def _assert_collision_happened(db) -> None:
 
 
 def _summary(db, *, batch_id: int, inserted_lines: int, listen_stats: dict[str, object], scale: str) -> dict[str, object]:
+    seed_artist_rows = (
+        db.query(Artist.id, Artist.system_key, Artist.name, Artist.owner_user_id, User.email)
+        .outerjoin(User, User.id == Artist.owner_user_id)
+        .filter(Artist.system_key.like("seed.artist.%"))
+        .order_by(Artist.system_key.asc())
+        .all()
+    )
+    treasury_row = (
+        db.query(Artist.id, Artist.system_key, Artist.name, Artist.owner_user_id)
+        .filter(Artist.system_key == "TREASURY")
+        .first()
+    )
+    seed_identity_map = {
+        "treasury": (
+            {
+                "artist_id": int(treasury_row.id),
+                "system_key": str(treasury_row.system_key or ""),
+                "name": str(treasury_row.name or ""),
+                "owner_user_id": int(treasury_row.owner_user_id) if treasury_row.owner_user_id is not None else None,
+            }
+            if treasury_row is not None
+            else None
+        ),
+        "artists": [
+            {
+                "artist_id": int(row.id),
+                "system_key": str(row.system_key or ""),
+                "artist_name": str(row.name or ""),
+                "owner_user_id": int(row.owner_user_id) if row.owner_user_id is not None else None,
+                "owner_email": str(row.email or "") or None,
+            }
+            for row in seed_artist_rows
+        ],
+    }
     return {
         "scale": scale,
         "users": int(db.query(func.count(User.id)).filter(User.email.like("%@seed.hmp.local")).scalar() or 0),
@@ -212,6 +255,7 @@ def _summary(db, *, batch_id: int, inserted_lines: int, listen_stats: dict[str, 
         "payout_batch_id": batch_id,
         "payout_lines_inserted": inserted_lines,
         "latest_batch_status": db.query(PayoutBatch.status).filter(PayoutBatch.id == batch_id).scalar(),
+        "seed_identity_map": seed_identity_map,
     }
 
 

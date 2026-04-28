@@ -24,7 +24,6 @@ export default function TrackSlugPage() {
   useEffect(() => {
     if (!slug.trim()) return;
     let cancelled = false;
-    setState({ kind: "loading" });
     void fetchTrackBySlug(slug)
       .then((track) => {
         if (cancelled) return;

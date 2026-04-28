@@ -25,8 +25,9 @@ Project-wide quickstart (Redis, venv, API, worker, frontend) lives in the **[roo
   - otherwise default is SQLite at `backend/dev.db`
 - Schema authority is Alembic (`alembic/`, `alembic.ini`, `alembic/versions/*`).
 - Startup behavior in `app/main.py`:
-  - in `APP_ENV=dev|development`: attempts automatic `alembic upgrade head`
-  - always asserts DB revision is current (`_assert_schema_is_current`) unless `SKIP_SCHEMA_CHECK=1`
+  - auto-migration is **disabled by default**
+  - in `APP_ENV=dev|development`, migration can be opt-in via `ENABLE_AUTO_MIGRATION=true`
+  - startup checks schema revision and logs warnings when not at head (does not crash app by default)
   - enforces treasury invariant via `ensure_treasury_entities`
 - `Base.metadata.create_all()` exists only behind `ALLOW_SCHEMA_BOOTSTRAP=true` and is an escape hatch for isolated local bootstrap/testing.
 
@@ -55,13 +56,24 @@ Project-wide quickstart (Redis, venv, API, worker, frontend) lives in the **[roo
 
 ### Normal flow (official)
 
-1. Run migrations: `.venv/bin/python -m alembic upgrade head`
+1. Run safe dev migration flow: `python backend/scripts/dev_migrate.py`
 2. Start API: `.venv/bin/python -m uvicorn app.main:app --reload --host localhost --port 8000`
+
+### Safe dev migration workflow
+
+- Command: `python backend/scripts/dev_migrate.py`
+- Preflight checks before running Alembic:
+  - detects stale `_alembic_tmp_*` tables
+  - checks FK integrity via `PRAGMA foreign_key_check`
+  - validates `alembic_version` consistency
+- If preflight fails, migration is blocked with actionable instructions.
+- If migration fails, follow printed instructions and fix state intentionally.
+- **Do not reset/delete the DB as a first response**; only do so when explicitly required.
 
 ### What startup does
 
-- In dev environments, startup may auto-run migrations to head.
-- Startup still enforces schema revision consistency and fails fast when stale.
+- In dev environments, startup does not auto-run migrations unless `ENABLE_AUTO_MIGRATION=true`.
+- Startup warns when schema is stale and points to migration commands.
 - Startup does not create schema in normal mode.
 
 ### Bootstrap escape hatch (legacy)
@@ -295,8 +307,8 @@ Authorization combines JWT identity, RBAC permissions, and ownership checks.
 Current important endpoint protections:
 
 - `POST /artists/{artist_id}/songs`:
-  - requires RBAC permission `upload_music`
-  - requires ownership-aware access via `can_edit_artist`
+  - deprecated legacy shortcut
+  - requires ownership-aware access via `require_artist_owner` (admin override supported)
 - Admin payout/settlement routes:
   - require RBAC permission `admin_full_access`
   - also use impersonation guard on sensitive mutations

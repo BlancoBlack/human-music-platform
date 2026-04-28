@@ -21,7 +21,6 @@ export default function ArtistSlugPage() {
   useEffect(() => {
     if (!slug.trim()) return;
     let cancelled = false;
-    setState({ kind: "loading" });
     void fetchArtistBySlug(slug)
       .then((data) => {
         if (cancelled) return;

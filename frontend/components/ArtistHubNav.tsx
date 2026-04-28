@@ -1,62 +1,16 @@
 "use client";
 
-import { API_BASE } from "@/lib/publicEnv";
-
-type HubTab = "overview" | "analytics" | "payouts" | "catalog" | "upload";
-
 type ArtistHubNavProps = {
   artistId: number;
-  active: HubTab;
+  active: "overview" | "analytics" | "payouts" | "catalog" | "upload";
 };
 
 /**
- * Mirrors FastAPI artist HTML nav; Overview / Analytics / Payouts use API_BASE.
+ * Legacy artist-hub nav is intentionally disabled.
+ * Navigation source of truth lives in GlobalNavbar + StudioSecondaryNavbar.
  */
 export function ArtistHubNav({ artistId, active }: ArtistHubNavProps) {
-  const id = artistId;
-  const dash = `${API_BASE}/artist-dashboard/${id}`;
-  const analytics = `/artist-analytics?artist_id=${id}`;
-  const payouts = `${API_BASE}/artist-payouts/${id}`;
-  const catalog = `/artist-catalog?artist_id=${id}`;
-  const upload = `/artist-upload?artist_id=${id}`;
-
-  const item = (tab: HubTab, href: string, label: string) => (
-    <a
-      href={href}
-      className={
-        active === tab
-          ? "font-bold text-neutral-900 dark:text-neutral-100"
-          : "text-neutral-600 underline-offset-4 hover:underline dark:text-neutral-400"
-      }
-    >
-      {label}
-    </a>
-  );
-
-  return (
-    <nav
-      className="mb-8 border-b border-neutral-200 pb-3 text-sm dark:border-neutral-800"
-      aria-label="Artist hub"
-    >
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        {item("overview", dash, "Overview")}
-        <span className="text-neutral-300 dark:text-neutral-600" aria-hidden>
-          |
-        </span>
-        {item("analytics", analytics, "Analytics")}
-        <span className="text-neutral-300 dark:text-neutral-600" aria-hidden>
-          |
-        </span>
-        {item("payouts", payouts, "Payouts")}
-        <span className="text-neutral-300 dark:text-neutral-600" aria-hidden>
-          |
-        </span>
-        {item("catalog", catalog, "Catalog")}
-        <span className="text-neutral-300 dark:text-neutral-600" aria-hidden>
-          |
-        </span>
-        {item("upload", upload, "Upload")}
-      </div>
-    </nav>
-  );
+  void artistId;
+  void active;
+  return null;
 }

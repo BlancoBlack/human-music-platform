@@ -26,7 +26,6 @@ def upsert_seed_artists(
             row = Artist(
                 name=artist_name,
                 system_key=system_key,
-                user_id=int(user.id),
                 owner_user_id=int(user.id),
                 payout_method="crypto",
                 payout_wallet_address=wallet_address,
@@ -35,7 +34,6 @@ def upsert_seed_artists(
             db.add(row)
         else:
             row.name = artist_name
-            row.user_id = int(user.id)
             row.owner_user_id = int(user.id)
             row.payout_method = "crypto"
             row.payout_wallet_address = wallet_address

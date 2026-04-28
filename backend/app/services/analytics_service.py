@@ -18,6 +18,7 @@ from sqlalchemy import Integer, distinct, func
 from app.core.database import SessionLocal
 from app.models.listening_aggregate import ListeningAggregate
 from app.models.listening_event import ListeningEvent
+from app.models.release import RELEASE_STATE_PUBLISHED, Release
 from app.models.song import Song
 from app.models.user import User
 from app.models.user_balance import UserBalance
@@ -57,6 +58,15 @@ def _valid_stream_filter_conditions() -> tuple[Any, ...]:
     return (
         ListeningEvent.is_valid.is_(True),
         ListeningEvent.validated_duration > 0,
+    )
+
+
+def _published_song_filter_conditions() -> tuple[Any, ...]:
+    """Canonical song visibility filter for lifecycle/insights semantics."""
+    return (
+        Song.deleted_at.is_(None),
+        Song.upload_status == "ready",
+        Release.state == RELEASE_STATE_PUBLISHED,
     )
 
 
@@ -593,7 +603,11 @@ def get_artist_insights(
 
         song_count = (
             db.query(func.count(Song.id))
-            .filter(Song.artist_id == artist_id, Song.deleted_at.is_(None))
+            .join(Release, Release.id == Song.release_id)
+            .filter(
+                Song.artist_id == artist_id,
+                *_published_song_filter_conditions(),
+            )
             .scalar()
         )
         song_count = int(song_count or 0)
@@ -611,9 +625,10 @@ def get_artist_insights(
         total_valid_streams = (
             db.query(func.count(ListeningEvent.id))
             .join(Song, Song.id == ListeningEvent.song_id)
+            .join(Release, Release.id == Song.release_id)
             .filter(
                 Song.artist_id == artist_id,
-                Song.deleted_at.is_(None),
+                *_published_song_filter_conditions(),
                 *_valid_stream_filter_conditions(),
             )
             .scalar()
@@ -634,9 +649,10 @@ def get_artist_insights(
             db.query(func.count(distinct(ListeningEvent.user_id)))
             .select_from(ListeningEvent)
             .join(Song, Song.id == ListeningEvent.song_id)
+            .join(Release, Release.id == Song.release_id)
             .filter(
                 Song.artist_id == artist_id,
-                Song.deleted_at.is_(None),
+                *_published_song_filter_conditions(),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_utc,
                 ListeningEvent.created_at <= now_utc,
@@ -658,9 +674,10 @@ def get_artist_insights(
         first_fan_row = (
             db.query(ListeningEvent.user_id, func.count(ListeningEvent.id).label("valid_streams"))
             .join(Song, Song.id == ListeningEvent.song_id)
+            .join(Release, Release.id == Song.release_id)
             .filter(
                 Song.artist_id == artist_id,
-                Song.deleted_at.is_(None),
+                *_published_song_filter_conditions(),
                 *_valid_stream_filter_conditions(),
             )
             .group_by(ListeningEvent.user_id)
@@ -686,9 +703,10 @@ def get_artist_insights(
                 func.count(ListeningEvent.id).label("valid_streams"),
             )
             .join(Song, Song.id == ListeningEvent.song_id)
+            .join(Release, Release.id == Song.release_id)
             .filter(
                 Song.artist_id == artist_id,
-                Song.deleted_at.is_(None),
+                *_published_song_filter_conditions(),
                 *_valid_stream_filter_conditions(),
             )
             .group_by(ListeningEvent.user_id, Song.id)
@@ -720,10 +738,11 @@ def get_artist_insights(
                 func.count(ListeningEvent.id).label("valid_streams"),
             )
             .join(Song, Song.id == ListeningEvent.song_id)
+            .join(Release, Release.id == Song.release_id)
             .join(User, User.id == ListeningEvent.user_id)
             .filter(
                 Song.artist_id == artist_id,
-                Song.deleted_at.is_(None),
+                *_published_song_filter_conditions(),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_utc,
                 ListeningEvent.created_at <= now_utc,
@@ -764,10 +783,11 @@ def get_artist_insights(
                 func.count(ListeningEvent.id).label("valid_streams"),
             )
             .join(Song, Song.id == ListeningEvent.song_id)
+            .join(Release, Release.id == Song.release_id)
             .join(User, User.id == ListeningEvent.user_id)
             .filter(
                 Song.artist_id == artist_id,
-                Song.deleted_at.is_(None),
+                *_published_song_filter_conditions(),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_week,
                 ListeningEvent.created_at <= now_week,
@@ -798,9 +818,10 @@ def get_artist_insights(
             db.query(func.count(distinct(ListeningEvent.user_id)))
             .select_from(ListeningEvent)
             .join(Song, Song.id == ListeningEvent.song_id)
+            .join(Release, Release.id == Song.release_id)
             .filter(
                 Song.artist_id == artist_id,
-                Song.deleted_at.is_(None),
+                *_published_song_filter_conditions(),
                 *_valid_stream_filter_conditions(),
                 ListeningEvent.created_at >= start_30,
                 ListeningEvent.created_at <= now_30,

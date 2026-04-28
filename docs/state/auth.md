@@ -62,7 +62,25 @@
 - **`POST /auth/login`**: email/password; inactive → 403; unverified email **does not** block login (comment in code).
 - **`GET /auth/me`**: requires `get_current_user`; returns id, email, flags, `display_name` from profile, `roles` from `user_roles`, aggregated `permissions` from RBAC role-permission mappings, and optional `impersonation` block if actor id on request state.
 - **RBAC permissions layer**: tables `roles`, `permissions`, `role_permissions` exist alongside `user_roles` (kept for compatibility). Permission checks can use `get_user_permissions(user_id)` and `has_permission(user, permission_name)` from `app/services/rbac_service.py`; `has_permission` can use preloaded permissions to avoid repeated queries in one request path.
-- **Authorization helpers in use**: endpoint guards use `require_permission(permission_name)` for RBAC enforcement; artist write paths can combine RBAC with ownership checks via `can_edit_artist`.
+- **Authorization helpers in use**: endpoint guards use `require_permission(permission_name)` for RBAC enforcement on selected admin/privileged routes; artist upload/write paths use dependency-based ownership checks.
+- **Authorization helpers in use**: endpoint guards use `require_permission(permission_name)` for RBAC enforcement; artist write paths use dependency-based ownership checks (`require_artist_owner`, `require_song_owner`, `require_release_owner`) with optional RBAC permission gates on selected routes.
+- **Release approvals participant-actor enforcement**: studio release approval endpoints enforce participant-level actor checks (`require_participant_actor` semantics): caller must own the target `artist_id`, and `(release_id, artist_id)` must exist in `release_participants`; this allows collaborators to approve/reject their own participation while preventing release owners from acting for other artists.
+- **Legacy upload auth model**: deprecated `POST /artists/{artist_id}/songs` now relies on dependency-based ownership (`require_artist_owner`) only, matching canonical ownership-first upload authorization semantics.
+- **Ownership source of truth**: auth-aware ownership checks use `get_artist_owner_id(artist)` backed solely by `owner_user_id` (no legacy `user_id` fallback).
+- **Central write ownership dependencies** (`app/api/deps.py`):
+  - `require_artist_owner(artist_id)` validates JWT user ownership for artist-scoped writes and returns the `Artist` row.
+  - `require_song_owner(song_id)` and `require_release_owner(release_id)` enforce the same ownership contract for song/release mutation routes.
+  - Shared check path `enforce_artist_ownership(...)` fails closed (403) when owner cannot be resolved and allows admin override via RBAC permissions (`admin_full_access` or `edit_any_artist`).
+- **Central read access dependencies** (`app/api/deps.py`):
+  - `require_artist_owner(artist_id)` also protects sensitive artist read surfaces (dashboard, analytics, payouts).
+  - `require_self_or_admin(user_id)` protects user-scoped read routes (`/dashboard/{user_id}`, `/payout/{user_id}`, `/compare/{user_id}`), allowing only self access or admin override.
+- **Studio context helpers** (`app/api/deps.py`):
+  - `get_current_context(db, user)` resolves effective context from persisted `users.current_context_type/current_context_id`, falling back to `{type: "user", id: user.id}` when stored context is missing/invalid.
+  - `validate_context_for_user_or_403(...)` and `is_context_allowed_for_user(...)` enforce fail-closed ownership validation for `user|artist|label` contexts.
+  - Context ownership rules: `user` context id must equal authenticated `user.id`; `artist`/`label` context id must be owned by `owner_user_id`.
+- **Studio context endpoints**:
+  - `GET /studio/me` requires JWT and returns user identity + allowed contexts (`owned_artists`, `owned_labels`) + `current_context`.
+  - `POST /studio/context` requires JWT, validates ownership server-side, persists the selected context, and returns updated `current_context`.
 - **Prepared onboarding upload restriction**: helper `can_upload_song(user, artist, db)` is available for future enforcement; if `user.onboarding_completed=false`, upload is allowed only while artist has `<1` non-deleted song, otherwise unlimited.
 - **Role assignment validation**: role writes through `create_user` now validate role names against `roles.name` via `assign_role_to_user` / `validate_role_exists`; unknown role assignments are rejected.
 - **Invalid-role detection**: `/auth/me` keeps returning legacy `roles` values but triggers warning logs when a user has `user_roles.role` entries that do not exist in `roles.name`.
@@ -80,6 +98,8 @@
 ## PARTIALLY IMPLEMENTED
 
 - **Strict single-flight refresh on SQLite**: code documents that without `FOR UPDATE`, SQLite dev DBs can race under concurrent refresh.
+- **Artist ownership integrity gate**: Alembic `0021_validate_artist_owner_integrity` strictly blocks migration when any `owner_user_id` is null or mismatched (no automatic reassignment), and `0022_drop_legacy_artist_user_id` removes the legacy schema column afterward.
+- **Studio context persistence rollout**: Alembic `0023_add_studio_context_to_users` adds nullable `users.current_context_type` and `users.current_context_id` for server-validated studio context storage.
 
 ## NOT IMPLEMENTED
 
@@ -90,7 +110,8 @@
 
 - **Authorization posture**: admin and privileged write routes use JWT identity + RBAC permissions (`admin_full_access`, etc.); no parallel shared-secret route authorization remains.
 - **Cookie + CORS**: `main.py` documents `127.0.0.1` vs `localhost` mismatch for dev (middleware logs warning).
+- **Post-reset auth false negatives (SQLite dev)**: after deleting/recreating `backend/dev.db` and reseeding while Uvicorn is already running, login checks can return transient `401 Invalid email or password` until the API process is restarted and reconnects to the fresh SQLite file.
 - **RBAC linkage integrity gap**: `user_roles.role` is a free-form string (no FK to `roles`), so typos or renamed roles can still appear in `/auth/me.roles` while resolving to zero permissions.
 - **RBAC naming drift risk**: role matching is string-based (`user_roles.role == roles.name`) rather than id-based; this is backward compatible but more fragile than a `role_id` FK design.
-- **Public data endpoints bypass auth layer**: several artist/user-id surfaces (`/artist-dashboard/{artist_id}`, `/artist-payouts/{artist_id}`, `/artist-analytics/{artist_id}`, `/artist/{artist_id}/...`, `/payout/{user_id}`, `/compare/{user_id}`, `/dashboard/{user_id}`) do not use `get_current_user` or ownership dependencies, so auth is not consistently enforced across payout/analytics reads.
-- **Mixed ownership source in authorization checks**: auth-aware write paths are split between legacy `artists.user_id` checks (`assert_user_owns_song`, `POST /songs`) and `can_edit_artist` checks on `artists.owner_user_id` (`POST /artists/{artist_id}/songs`), creating inconsistent access outcomes when the two fields diverge.
+- **Owner integrity is strict**: owner-only enforcement denies when `owner_user_id` is missing, and migration `0021_validate_artist_owner_integrity` stops rollout until missing/mismatched rows are explicitly resolved.
+- **Artist public profile routes remain public by design**: slug/id catalog reads (`/artist/{slug}`, `/album/{slug}`, `/track/{slug}`, `/artists/search`) are still public surfaces; only sensitive artist/user finance and analytics reads are ownership-gated.

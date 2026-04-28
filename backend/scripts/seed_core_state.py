@@ -65,17 +65,26 @@ from app.models.genre import Genre  # noqa: E402
 from app.models.listening_event import ListeningEvent  # noqa: E402
 from app.models.payout_batch import PayoutBatch  # noqa: E402
 from app.models.payout_line import PayoutLine  # noqa: E402
+from app.models.release import (  # noqa: E402
+    RELEASE_APPROVAL_STATUS_DRAFT,
+    RELEASE_STATE_DRAFT,
+    RELEASE_TYPE_SINGLE,
+    Release,
+)
+from app.models.release_media_asset import (  # noqa: E402
+    RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+    ReleaseMediaAsset,
+)
 from app.models.song import (  # noqa: E402
+    SONG_STATE_DRAFT,
     SONG_STATE_READY_FOR_RELEASE,
     Song,
 )
 from app.models.song_credit_entry import SongCreditEntry  # noqa: E402
 from app.models.song_media_asset import (  # noqa: E402
-    SONG_MEDIA_KIND_COVER_ART,
     SONG_MEDIA_KIND_MASTER_AUDIO,
     SongMediaAsset,
 )
-from app.models.song_artist_split import SongArtistSplit  # noqa: E402
 from app.models.subgenre import Subgenre  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.models.user_balance import UserBalance  # noqa: E402
@@ -85,8 +94,10 @@ from app.services.payout_service import (  # noqa: E402
     get_treasury_artist,
 )
 from app.services.payout_v2_snapshot_engine import generate_payout_lines  # noqa: E402
+from app.services.slug_service import ensure_release_slug  # noqa: E402
 from app.services.snapshot_service import build_snapshot  # noqa: E402
 from app.services.stream_service import StreamService  # noqa: E402
+from app.services.song_artist_split_service import set_splits_for_song  # noqa: E402
 from app.services.user_service import (  # noqa: E402
     SEED_LISTENER_PLACEHOLDER_PASSWORD,
     create_user,
@@ -183,7 +194,6 @@ def _ensure_core_artists(db: Session, users: list[User]) -> tuple[list[Artist], 
             row = Artist(
                 name=name,
                 system_key=sk,
-                user_id=int(user.id),
                 owner_user_id=int(user.id),
                 payout_method=PAYOUT_METHOD_STORED,
                 payout_wallet_address=ADMIN_WALLET,
@@ -196,9 +206,6 @@ def _ensure_core_artists(db: Session, users: list[User]) -> tuple[list[Artist], 
             dirty = False
             if row.name != name:
                 row.name = name
-                dirty = True
-            if int(row.user_id or 0) != int(user.id):
-                row.user_id = int(user.id)
                 dirty = True
             if int(row.owner_user_id or 0) != int(user.id):
                 row.owner_user_id = int(user.id)
@@ -228,6 +235,34 @@ def _resolve_genre_subgenre_ids(db: Session) -> tuple[int, int]:
     return int(g.id), int(sg.id)
 
 
+def _ensure_single_release_for_song(db: Session, *, artist: Artist, song_title: str) -> int:
+    release_title = f"{song_title} — Single"
+    row = (
+        db.query(Release)
+        .filter(
+            Release.artist_id == int(artist.id),
+            Release.type == RELEASE_TYPE_SINGLE,
+            Release.title == release_title,
+        )
+        .one_or_none()
+    )
+    if row is None:
+        row = Release(
+            title=release_title,
+            artist_id=int(artist.id),
+            owner_user_id=int(artist.owner_user_id) if artist.owner_user_id is not None else None,
+            type=RELEASE_TYPE_SINGLE,
+            release_date=datetime.now(UTC),
+            state=RELEASE_STATE_DRAFT,
+            approval_status=RELEASE_APPROVAL_STATUS_DRAFT,
+            split_version=1,
+        )
+        db.add(row)
+        db.flush()
+        ensure_release_slug(db, row, title_source=release_title)
+    return int(row.id)
+
+
 def _ensure_core_songs(
     db: Session,
     artists: list[Artist],
@@ -245,6 +280,7 @@ def _ensure_core_songs(
         for sn in range(1, 6):
             sk = f"{prefix}_song_{sn:02d}"
             title = f"{prefix.replace('_', ' ').title()} — piece {sn}"
+            release_id = _ensure_single_release_for_song(db, artist=a, song_title=title)
             moods = list(MOOD_ROTATION[(int(a.id) + sn) % len(MOOD_ROTATION)])
             cc, city = CITIES[(int(a.id) + sn) % len(CITIES)]
             row = db.query(Song).filter(Song.system_key == sk).one_or_none()
@@ -253,6 +289,7 @@ def _ensure_core_songs(
                     title=title,
                     system_key=sk,
                     artist_id=int(a.id),
+                    release_id=release_id,
                     is_system=False,
                     genre_id=genre_id,
                     subgenre_id=subgenre_id,
@@ -261,8 +298,8 @@ def _ensure_core_songs(
                     city=city,
                     duration_seconds=180,
                     file_path=MASTER_REL,
-                    upload_status="ready",
-                    state=SONG_STATE_READY_FOR_RELEASE,
+                    upload_status="draft",
+                    state=SONG_STATE_DRAFT,
                 )
                 db.add(row)
                 db.flush()
@@ -274,6 +311,15 @@ def _ensure_core_songs(
                     dirty = True
                 if int(row.artist_id or 0) != int(a.id):
                     row.artist_id = int(a.id)
+                    dirty = True
+                if int(row.release_id or 0) != int(release_id):
+                    cur_state = getattr(row.state, "value", row.state)
+                    if str(cur_state or "") == str(SONG_STATE_READY_FOR_RELEASE):
+                        raise RuntimeError(
+                            f"Seed lifecycle violation: song {int(row.id)} is ready_for_release "
+                            "and cannot change release membership."
+                        )
+                    row.release_id = int(release_id)
                     dirty = True
                 if int(row.genre_id or 0) != genre_id:
                     row.genre_id = genre_id
@@ -296,12 +342,12 @@ def _ensure_core_songs(
                 if (row.file_path or "") != MASTER_REL:
                     row.file_path = MASTER_REL
                     dirty = True
-                if (row.upload_status or "") != "ready":
-                    row.upload_status = "ready"
+                if (row.upload_status or "") != "draft":
+                    row.upload_status = "draft"
                     dirty = True
-                cur_state = getattr(row.state, "value", row.state)
-                if str(cur_state or "") != str(SONG_STATE_READY_FOR_RELEASE):
-                    row.state = SONG_STATE_READY_FOR_RELEASE
+                cur_state2 = getattr(row.state, "value", row.state)
+                if str(cur_state2 or "") != str(SONG_STATE_DRAFT):
+                    row.state = SONG_STATE_DRAFT
                     dirty = True
                 if row.deleted_at is not None:
                     row.deleted_at = None
@@ -344,58 +390,60 @@ def _ensure_song_credits(db: Session, song: Song, artist: Artist) -> None:
             r.role = role
 
 
-def _ensure_song_splits(db: Session, song: Song) -> None:
-    aid = int(song.artist_id)
+def _ensure_song_media(db: Session, song: Song) -> None:
+    if song.release_id is None:
+        raise RuntimeError(
+            f"Seed lifecycle violation: song {int(song.id)} missing release_id before media stage."
+        )
+    sid = int(song.id)
+    kind = SONG_MEDIA_KIND_MASTER_AUDIO
+    path = MASTER_REL
+    mime = "audio/wav"
+    sha = hashlib.sha256(f"{sid}:{kind}:{path}".encode()).hexdigest()
+    asset = (
+        db.query(SongMediaAsset)
+        .filter(SongMediaAsset.song_id == sid, SongMediaAsset.kind == kind)
+        .first()
+    )
+    if asset is None:
+        db.add(
+            SongMediaAsset(
+                song_id=sid,
+                kind=kind,
+                file_path=path,
+                mime_type=mime,
+                byte_size=2048,
+                sha256=sha,
+            )
+        )
+    else:
+        asset.file_path = path
+        asset.mime_type = mime
+        asset.byte_size = 2048
+        asset.sha256 = sha
+
+
+def _ensure_release_cover(db: Session, song: Song) -> None:
+    if song.release_id is None:
+        return
     row = (
-        db.query(SongArtistSplit)
+        db.query(ReleaseMediaAsset)
         .filter(
-            SongArtistSplit.song_id == int(song.id),
-            SongArtistSplit.artist_id == aid,
+            ReleaseMediaAsset.release_id == int(song.release_id),
+            ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
         )
         .first()
     )
     if row is None:
         db.add(
-            SongArtistSplit(
-                song_id=int(song.id),
-                artist_id=aid,
-                share=1.0,
-                split_bps=10000,
+            ReleaseMediaAsset(
+                release_id=int(song.release_id),
+                asset_type=RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+                file_path=COVER_REL,
             )
         )
     else:
-        row.share = 1.0
-        row.split_bps = 10000
-
-
-def _ensure_song_media(db: Session, song: Song) -> None:
-    sid = int(song.id)
-    for kind, path, mime in (
-        (SONG_MEDIA_KIND_MASTER_AUDIO, MASTER_REL, "audio/wav"),
-        (SONG_MEDIA_KIND_COVER_ART, COVER_REL, "image/png"),
-    ):
-        sha = hashlib.sha256(f"{sid}:{kind}:{path}".encode()).hexdigest()
-        asset = (
-            db.query(SongMediaAsset)
-            .filter(SongMediaAsset.song_id == sid, SongMediaAsset.kind == kind)
-            .first()
-        )
-        if asset is None:
-            db.add(
-                SongMediaAsset(
-                    song_id=sid,
-                    kind=kind,
-                    file_path=path,
-                    mime_type=mime,
-                    byte_size=2048,
-                    sha256=sha,
-                )
-            )
-        else:
-            asset.file_path = path
-            asset.mime_type = mime
-            asset.byte_size = 2048
-            asset.sha256 = sha
+        row.file_path = COVER_REL
 
 
 def _ensure_credits_splits_media(db: Session, songs: list[Song], artists: list[Artist]) -> None:
@@ -405,8 +453,16 @@ def _ensure_credits_splits_media(db: Session, songs: list[Song], artists: list[A
         if art is None:
             raise RuntimeError(f"No artist for song {s.system_key}")
         _ensure_song_credits(db, s, art)
-        _ensure_song_splits(db, s)
+        set_splits_for_song(
+            db,
+            int(s.id),
+            [{"artist_id": int(s.artist_id), "share": 1.0}],
+            commit=False,
+        )
         _ensure_song_media(db, s)
+        _ensure_release_cover(db, s)
+        s.upload_status = "ready"
+        s.state = SONG_STATE_READY_FOR_RELEASE
     db.commit()
 
 
@@ -624,6 +680,7 @@ def _print_summary(
     print(f"payout_total_cents_distributed={total_paid}")
     if payout_lines_inserted_run is not None:
         print(f"payout_lines_inserted_this_run={payout_lines_inserted_run}")
+    print("Core state seed completed")
 
 
 def main() -> None:

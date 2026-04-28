@@ -9,7 +9,6 @@ class Artist(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     slug = Column(String(255), nullable=False, unique=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     owner_user_id = Column(
         Integer,
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -23,11 +22,6 @@ class Artist(Base):
     payout_bank_info = Column(String(255), nullable=True)
     is_system = Column(Boolean, default=False, nullable=False)
 
-    user = relationship(
-        "User",
-        back_populates="linked_artists",
-        foreign_keys=[user_id],
-    )
     owner = relationship(
         "User",
         back_populates="owned_artists",

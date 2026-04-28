@@ -11,6 +11,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from app.core.sqlite_migration_utils import safe_sqlite_batch_op
 
 revision: str = "0014_user_roles_role_id_nullable_fk"
 down_revision: Union[str, Sequence[str], None] = "0013_rbac_roles_permissions"
@@ -45,7 +46,7 @@ def upgrade() -> None:
     fk_names = _fk_names(bind)
     if FK_NAME not in fk_names:
         if bind.dialect.name == "sqlite":
-            with op.batch_alter_table("user_roles") as batch_op:
+            def _add_fk(batch_op) -> None:
                 batch_op.create_foreign_key(
                     FK_NAME,
                     "roles",
@@ -53,6 +54,7 @@ def upgrade() -> None:
                     ["id"],
                     ondelete="SET NULL",
                 )
+            safe_sqlite_batch_op(op, "user_roles", _add_fk)
         else:
             op.create_foreign_key(
                 FK_NAME,
@@ -81,13 +83,15 @@ def downgrade() -> None:
     fk_names = _fk_names(bind)
     if FK_NAME in fk_names:
         if bind.dialect.name == "sqlite":
-            with op.batch_alter_table("user_roles") as batch_op:
+            def _drop_fk(batch_op) -> None:
                 batch_op.drop_constraint(FK_NAME, type_="foreignkey")
+            safe_sqlite_batch_op(op, "user_roles", _drop_fk)
         else:
             op.drop_constraint(FK_NAME, "user_roles", type_="foreignkey")
 
     if bind.dialect.name == "sqlite":
-        with op.batch_alter_table("user_roles") as batch_op:
+        def _drop_role_id(batch_op) -> None:
             batch_op.drop_column("role_id")
+        safe_sqlite_batch_op(op, "user_roles", _drop_role_id)
     else:
         op.drop_column("user_roles", "role_id")

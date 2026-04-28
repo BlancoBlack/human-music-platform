@@ -13,6 +13,7 @@ from app.models.subgenre import Subgenre
 from app.models.song_artist_split import SongArtistSplit
 from app.models.song_featured_artist import SongFeaturedArtist
 from app.services.release_service import bind_song_to_release, create_single_release_for_song
+from app.services.release_participant_service import sync_release_participants
 from app.services.song_artist_split_service import set_splits_for_song
 from app.services.song_metadata_validation import (
     validate_country_code,
@@ -160,6 +161,9 @@ def replace_song_featured_artists(
                 position=pos,
             )
         )
+    song = db.query(Song).filter(Song.id == int(song_id)).first()
+    if song is not None and song.release_id is not None:
+        sync_release_participants(db, int(song.release_id), commit=False)
 
 
 def replace_song_credit_entries(
@@ -254,6 +258,8 @@ def create_song_with_metadata(
             [{"artist_id": primary_id, "share": 1.0}],
             commit=False,
         )
+    if song.release_id is not None:
+        sync_release_participants(db, int(song.release_id), commit=False)
 
     db.commit()
     db.refresh(song)
@@ -337,6 +343,8 @@ def update_existing_song_metadata(
     song.city = city_norm
 
     replace_song_credit_entries(db, int(song_id), list(credits))
+    if song.release_id is not None:
+        sync_release_participants(db, int(song.release_id), commit=False)
 
     sync_song_state_from_upload_status(song)
     db.commit()

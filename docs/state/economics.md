@@ -5,13 +5,13 @@
 ### User-centric preview (live aggregates, not ledger)
 
 - **`calculate_user_distribution(user_id)`** (`payout_service.py`): reads `UserBalance` + `ListeningAggregate` for user; builds artist pool `monthly_amount * ARTIST_SHARE`; allocates by **weighted** listening mass when `total_weighted > epsilon`, else raw duration fallback, else treasury sink song/artist (`ensure_treasury_entities` / `get_treasury_song`). Returns list entries with `song_id`, shares, `payout`, `cents`, etc. (see function return shape in code).
-- **`GET /payout/{user_id}`**: JSON preview + `expand_song_distribution_to_artists` for per-artist cents; conservation check songs vs artists.
+- **`GET /payout/{user_id}`**: JSON preview + `expand_song_distribution_to_artists` for per-artist cents; conservation check songs vs artists. Access restricted by `require_self_or_admin(user_id)`.
 - **Splits**: `SongArtistSplit` + helpers (`song_split_distribution`, `song_artist_split_service`, `set_splits_for_song`) used where expansion requires per-song multi-artist allocation.
 
 ### Global pool model (comparison / “Spotify-style” benchmark in code comments)
 
 - **`calculate_global_distribution()`** (`pool_payout_service.py` — imported by routes): drives **`GET /pool-distribution`**.
-- **`compare_models(user_id)`** (`comparison_service.py`): pairs user-centric lines with global pool shares; scales pool amounts to the **same user artist pool** base (`ARTIST_SHARE` of that user’s `monthly_amount`); **filters system songs** out of both sides; returns `comparison` list and `user_id`. Used by **`GET /compare/{user_id}`** and HTML `GET /dashboard/{user_id}`.
+- **`compare_models(user_id)`** (`comparison_service.py`): pairs user-centric lines with global pool shares; scales pool amounts to the **same user artist pool** base (`ARTIST_SHARE` of that user’s `monthly_amount`); **filters system songs** out of both sides; returns `comparison` list and `user_id`. Used by **`GET /compare/{user_id}`** and HTML `GET /dashboard/{user_id}`; both now require `require_self_or_admin(user_id)`.
 
 ### Artist dashboard numbers (ledger-centric)
 
@@ -22,7 +22,7 @@
   - **Failed** — settlement `execution_status == 'failed'`.
   - **Pending** — batches `status == 'calculating'`.
 - **Spotify equivalent field**: `calculate_artist_spotify_equivalent(artist_id)` from `pool_payout_service` — exposed as `spotify_total` + `difference` vs ledger total.
-- **HTML** `GET /artist-dashboard/{artist_id}` renders the above; does **not** call `get_artist_estimated_total`.
+- **HTML** `GET /artist-dashboard/{artist_id}` renders the above; does **not** call `get_artist_estimated_total`; access now requires `require_artist_owner(artist_id)`.
 
 ### “Estimated” analytics model (dynamic, not ledger)
 

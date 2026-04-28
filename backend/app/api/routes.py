@@ -27,18 +27,40 @@ from sqlalchemy import case, desc, func
 from sqlalchemy.orm import joinedload
 
 from app.api.deps import (
+    enforce_participant_actor,
+    enforce_artist_ownership,
+    get_current_context,
     get_current_user,
     get_listening_user_id,
+    is_context_allowed_for_user,
     require_admin_user,
+    require_artist_owner,
+    require_release_owner,
     require_non_impersonation,
     require_permission,
+    require_self_or_admin,
+    require_song_owner,
+    validate_context_for_user_or_403,
+)
+from app.api.schemas.studio import (
+    ApprovalActionResponse,
+    PendingApprovalsListResponse,
+    PendingApprovalsResponse,
+    ReleaseDetailResponse,
 )
 from app.core.database import SessionLocal, get_db
 from app.data.genres import CANONICAL_GENRE_ORDER
 from app.models.artist import Artist
 from app.models.genre import Genre
 from app.models.listening_event import ListeningEvent
-from app.models.release import RELEASE_TYPE_ALBUM, Release
+from app.models.label import Label
+from app.models.release import RELEASE_STATE_PUBLISHED, RELEASE_TYPE_ALBUM, Release
+from app.models.release_participant import (
+    RELEASE_PARTICIPANT_STATUS_ACCEPTED,
+    RELEASE_PARTICIPANT_STATUS_PENDING,
+    RELEASE_PARTICIPANT_STATUS_REJECTED,
+    ReleaseParticipant,
+)
 from app.models.song_artist_split import SongArtistSplit
 from app.models.release_media_asset import RELEASE_MEDIA_ASSET_TYPE_COVER_ART, ReleaseMediaAsset
 from app.models.song import Song
@@ -46,7 +68,6 @@ from app.models.subgenre import Subgenre
 from app.models.song_credit_entry import SongCreditEntry
 from app.models.song_featured_artist import SongFeaturedArtist
 from app.models.song_media_asset import (
-    SONG_MEDIA_KIND_COVER_ART,
     SONG_MEDIA_KIND_MASTER_AUDIO,
     SongMediaAsset,
 )
@@ -69,7 +90,6 @@ from app.services.listening_checkpoint_service import (
 from app.services.stream_service import StreamService
 from app.services.comparison_service import compare_models
 from app.services.artist_dashboard_service import get_artist_dashboard
-from app.services.artist_access_service import can_edit_artist
 from app.services.analytics_service import (
     get_artist_insights,
     get_artist_streams_over_time,
@@ -82,28 +102,29 @@ from app.services.song_media_upload_service import (
     CoverResolutionInvalidError,
     MasterAudioImmutableError,
     WavFileTooLargeError,
-    effective_song_cover_art,
     upload_release_cover_art,
-    upload_song_cover_art,
     upload_song_master_audio,
 )
-from app.services.song_lifecycle_service import (
-    SongNotFoundError,
-    SongOwnershipError,
-    assert_user_owns_song,
-    delete_owned_song,
-)
+from app.services.media_utils import effective_song_cover
 from app.services.song_metadata_service import create_song_with_metadata, update_existing_song_metadata
 from app.services.release_service import (
     create_release,
     get_release_progress,
     get_release_tracks,
+    publish_release,
+)
+from app.services.release_participant_service import get_release_feature_artist_ids_map
+from app.services.release_approval_service import (
+    approve_participation,
+    list_release_approvals,
+    reject_participation,
 )
 from app.services.slug_service import (
     resolve_artist_slug,
     resolve_release_slug,
     resolve_song_slug,
 )
+from app.services.search_service import search_global
 from app.services.song_split_validation import SplitValidationError
 from app.workers.settlement_worker import process_batch_settlement
 
@@ -716,6 +737,760 @@ class CreateReleaseBody(BaseModel):
     )
 
 
+class ReleaseApprovalActionBody(BaseModel):
+    artist_id: int = Field(..., ge=1)
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class StudioContextBody(BaseModel):
+    type: Literal["user", "artist", "label"]
+    id: int = Field(..., ge=1)
+
+
+def _build_release_decision_payloads(
+    *,
+    db,
+    release_ids: list[int],
+    owned_artist_ids: set[int],
+) -> dict[int, dict]:
+    if not release_ids:
+        return {}
+
+    release_rows = (
+        db.query(
+            Release.id,
+            Release.title,
+            Release.approval_status,
+            Release.split_version,
+            Release.type,
+            Release.created_at,
+            Release.updated_at,
+            Release.artist_id,
+            Artist.name.label("release_artist_name"),
+        )
+        .join(Artist, Artist.id == Release.artist_id)
+        .filter(Release.id.in_(release_ids))
+        .all()
+    )
+    grouped: dict[int, dict] = {}
+    for row in release_rows:
+        release_id = int(row.id)
+        grouped[release_id] = {
+            "release": {
+                "id": release_id,
+                "title": row.title,
+                "cover_url": None,
+                "artist": {
+                    "id": int(row.artist_id),
+                    "name": row.release_artist_name,
+                },
+                "type": row.type,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "split_version": int(row.split_version or 1),
+                "track_count": 0,
+                "genres": [],
+                "moods": [],
+                "location": None,
+            },
+            "approval_status": row.approval_status,
+            "songs": [],
+            "splits": [],
+            "participants": [],
+            "pending_summary": {"split": 0, "feature": 0},
+            "_updated_at": row.updated_at,
+            "_created_at": row.created_at,
+        }
+
+    release_cover_rows = (
+        db.query(ReleaseMediaAsset.release_id, ReleaseMediaAsset.file_path)
+        .filter(
+            ReleaseMediaAsset.release_id.in_(release_ids),
+            ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+        )
+        .all()
+    )
+    for release_id, file_path in release_cover_rows:
+        rid = int(release_id)
+        if rid in grouped and grouped[rid]["release"]["cover_url"] is None:
+            grouped[rid]["release"]["cover_url"] = public_media_url_from_stored_path(file_path)
+
+    song_rows = (
+        db.query(
+            Song.id,
+            Song.release_id,
+            Song.title,
+            Song.artist_id,
+            Genre.name.label("genre_name"),
+            Song.moods,
+            Song.country_code,
+            Song.city,
+        )
+        .outerjoin(Genre, Genre.id == Song.genre_id)
+        .filter(Song.release_id.in_(release_ids), Song.deleted_at.is_(None))
+        .order_by(Song.release_id.asc(), Song.id.asc())
+        .all()
+    )
+    song_ids: list[int] = []
+    song_payload_by_id: dict[int, dict] = {}
+    song_release_id_by_song_id: dict[int, int] = {}
+    release_genres: dict[int, set[str]] = {rid: set() for rid in release_ids}
+    release_moods: dict[int, set[str]] = {rid: set() for rid in release_ids}
+    featured_artist_ids_by_release = get_release_feature_artist_ids_map(
+        db,
+        release_ids=release_ids,
+    )
+    for row in song_rows:
+        release_id = int(row.release_id)
+        if release_id not in grouped:
+            continue
+        song_id = int(row.id)
+        song_ids.append(song_id)
+        song_release_id_by_song_id[song_id] = release_id
+        payload = {
+            "id": song_id,
+            "title": row.title,
+            "primary_artist_id": int(row.artist_id),
+            "featured_artists": [],
+            "credits": [],
+        }
+        song_payload_by_id[song_id] = payload
+        grouped[release_id]["songs"].append(payload)
+        grouped[release_id]["release"]["track_count"] += 1
+        if row.genre_name:
+            release_genres[release_id].add(str(row.genre_name))
+        for mood in (row.moods or []):
+            release_moods[release_id].add(str(mood))
+        if grouped[release_id]["release"]["location"] is None:
+            if row.city and row.country_code:
+                grouped[release_id]["release"]["location"] = f"{row.city}, {row.country_code}"
+            elif row.city:
+                grouped[release_id]["release"]["location"] = str(row.city)
+            elif row.country_code:
+                grouped[release_id]["release"]["location"] = str(row.country_code)
+
+    if song_ids:
+        featured_rows = (
+            db.query(
+                SongFeaturedArtist.song_id,
+                SongFeaturedArtist.artist_id,
+                Artist.name,
+            )
+            .join(Artist, Artist.id == SongFeaturedArtist.artist_id)
+            .filter(SongFeaturedArtist.song_id.in_(song_ids))
+            .order_by(SongFeaturedArtist.song_id.asc(), SongFeaturedArtist.position.asc())
+            .all()
+        )
+        for row in featured_rows:
+            song_payload = song_payload_by_id.get(int(row.song_id))
+            if song_payload is not None:
+                song_payload["featured_artists"].append(
+                    {"artist_id": int(row.artist_id), "artist_name": row.name}
+                )
+            release_id = song_release_id_by_song_id.get(int(row.song_id))
+            if release_id is not None and release_id not in featured_artist_ids_by_release:
+                featured_artist_ids_by_release[release_id] = set()
+
+        credit_rows = (
+            db.query(
+                SongCreditEntry.song_id,
+                SongCreditEntry.display_name,
+                SongCreditEntry.role,
+            )
+            .filter(SongCreditEntry.song_id.in_(song_ids))
+            .order_by(SongCreditEntry.song_id.asc(), SongCreditEntry.position.asc())
+            .all()
+        )
+        for row in credit_rows:
+            song_payload = song_payload_by_id.get(int(row.song_id))
+            if song_payload is not None:
+                song_payload["credits"].append(
+                    {"name": row.display_name, "role": row.role}
+                )
+
+        split_rows = (
+            db.query(
+                Song.release_id,
+                SongArtistSplit.artist_id,
+                Artist.name,
+                func.sum(SongArtistSplit.split_bps).label("sum_split_bps"),
+            )
+            .join(Song, Song.id == SongArtistSplit.song_id)
+            .join(Artist, Artist.id == SongArtistSplit.artist_id)
+            .filter(Song.release_id.in_(release_ids), Song.deleted_at.is_(None))
+            .group_by(Song.release_id, SongArtistSplit.artist_id, Artist.name)
+            .all()
+        )
+        total_bps_by_release: dict[int, int] = {rid: 0 for rid in release_ids}
+        split_payload_rows: dict[int, list[dict]] = {rid: [] for rid in release_ids}
+        for row in split_rows:
+            rid = int(row.release_id)
+            bps = int(row.sum_split_bps or 0)
+            total_bps_by_release[rid] += bps
+            split_payload_rows[rid].append(
+                {
+                    "artist_id": int(row.artist_id),
+                    "artist_name": row.name,
+                    "_split_bps": bps,
+                }
+            )
+        for rid in release_ids:
+            if rid not in grouped:
+                continue
+            total = int(total_bps_by_release.get(rid, 0))
+            payload = []
+            for row in split_payload_rows.get(rid, []):
+                share = (float(row["_split_bps"]) / float(total)) if total > 0 else 0.0
+                payload.append(
+                    {
+                        "artist_id": row["artist_id"],
+                        "artist_name": row["artist_name"],
+                        "share": share,
+                    }
+                )
+            grouped[rid]["splits"] = sorted(payload, key=lambda x: int(x["artist_id"]))
+
+    for rid in release_ids:
+        if rid not in grouped:
+            continue
+        grouped[rid]["release"]["genres"] = sorted(release_genres.get(rid, set()))
+        grouped[rid]["release"]["moods"] = sorted(release_moods.get(rid, set()))
+
+    participant_rows = (
+        db.query(
+            ReleaseParticipant.release_id,
+            ReleaseParticipant.artist_id,
+            Artist.name.label("artist_name"),
+            ReleaseParticipant.role,
+            ReleaseParticipant.status,
+            ReleaseParticipant.approval_type,
+            ReleaseParticipant.requires_approval,
+            ReleaseParticipant.rejection_reason,
+            ReleaseParticipant.approved_at,
+        )
+        .join(Artist, Artist.id == ReleaseParticipant.artist_id)
+        .filter(ReleaseParticipant.release_id.in_(release_ids))
+        .order_by(ReleaseParticipant.release_id.asc(), ReleaseParticipant.artist_id.asc())
+        .all()
+    )
+    for row in participant_rows:
+        rid = int(row.release_id)
+        if rid not in grouped:
+            continue
+        approval_type = str(row.approval_type)
+        is_actionable_for_user = (
+            int(row.artist_id) in owned_artist_ids
+            and bool(row.requires_approval)
+            and str(row.status) == RELEASE_PARTICIPANT_STATUS_PENDING
+        )
+        participant_payload = {
+            "artist_id": int(row.artist_id),
+            "artist_name": row.artist_name,
+            "role": row.role,
+            "status": row.status,
+            "approval_type": approval_type,
+            "requires_approval": bool(row.requires_approval),
+            "blocking": approval_type == "split",
+            "is_actionable_for_user": is_actionable_for_user,
+            "has_feature_context": int(row.artist_id) in featured_artist_ids_by_release.get(rid, set()),
+            "rejection_reason": row.rejection_reason,
+            "approved_at": row.approved_at.isoformat() if row.approved_at else None,
+        }
+        grouped[rid]["participants"].append(participant_payload)
+        if is_actionable_for_user:
+            if approval_type == "split":
+                grouped[rid]["pending_summary"]["split"] += 1
+            elif approval_type == "feature":
+                grouped[rid]["pending_summary"]["feature"] += 1
+
+    def _participant_sort_key(item: dict) -> tuple[int, int]:
+        status = str(item.get("status", ""))
+        approval_type = str(item.get("approval_type", ""))
+        if status == RELEASE_PARTICIPANT_STATUS_PENDING and approval_type == "split":
+            return (0, int(item.get("artist_id", 0)))
+        if status == RELEASE_PARTICIPANT_STATUS_PENDING and approval_type == "feature":
+            return (1, int(item.get("artist_id", 0)))
+        if status == RELEASE_PARTICIPANT_STATUS_ACCEPTED:
+            return (2, int(item.get("artist_id", 0)))
+        if status == RELEASE_PARTICIPANT_STATUS_REJECTED:
+            return (3, int(item.get("artist_id", 0)))
+        return (4, int(item.get("artist_id", 0)))
+
+    for rid in release_ids:
+        if rid not in grouped:
+            continue
+        grouped[rid]["participants"] = sorted(
+            grouped[rid]["participants"],
+            key=_participant_sort_key,
+        )
+    return grouped
+
+
+def _require_owner_for_create_song(
+    body: CreateSongBody,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+) -> Artist:
+    return enforce_artist_ownership(
+        artist_id=int(body.artist_id),
+        user=user,
+        db=db,
+    )
+
+
+def _require_owner_for_create_release(
+    body: CreateReleaseBody,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+) -> Artist:
+    return enforce_artist_ownership(
+        artist_id=int(body.artist_id),
+        user=user,
+        db=db,
+    )
+
+
+def _require_participant_actor_for_release_approval_action(
+    release_id: int,
+    body: ReleaseApprovalActionBody,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+) -> object:
+    return enforce_participant_actor(
+        release_id=int(release_id),
+        artist_id=int(body.artist_id),
+        user=user,
+        db=db,
+    )
+
+
+@router.get("/studio/me")
+def get_studio_me(
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    owned_artists = (
+        db.query(Artist)
+        .filter(Artist.owner_user_id == int(user.id))
+        .order_by(Artist.id.asc())
+        .all()
+    )
+    owned_labels = (
+        db.query(Label)
+        .filter(Label.owner_user_id == int(user.id))
+        .order_by(Label.id.asc())
+        .all()
+    )
+    current_context = get_current_context(db=db, user=user)
+    allowed_contexts = {
+        "artists": [
+            {
+                "id": int(artist.id),
+                "name": artist.name,
+                "slug": artist.slug,
+            }
+            for artist in owned_artists
+        ],
+        "labels": [
+            {
+                "id": int(label.id),
+                "name": label.name,
+            }
+            for label in owned_labels
+        ],
+    }
+    user_context = {
+        "id": int(user.id),
+        "email": user.email,
+    }
+    return {
+        "user": user_context,
+        "allowed_contexts": allowed_contexts,
+        "current_context": current_context,
+    }
+
+
+@router.get("/studio/{artist_id}/catalog")
+def get_studio_catalog(
+    artist_id: int,
+    sort: Literal["top", "new", "old"] = Query(default="top"),
+    _owned_artist: Artist = Depends(require_artist_owner),
+    db=Depends(get_db),
+):
+    release_rows = (
+        db.query(Release)
+        .filter(
+            Release.artist_id == int(artist_id),
+            Release.state == RELEASE_STATE_PUBLISHED,
+        )
+        .order_by(
+            case(
+                (
+                    Release.state == RELEASE_STATE_PUBLISHED,
+                    func.coalesce(Release.discoverable_at, Release.created_at),
+                ),
+                else_=Release.discoverable_at,
+            ).desc()
+        )
+        .limit(5)
+        .all()
+    )
+
+    release_ids = [int(r.id) for r in release_rows]
+    cover_rows = []
+    if release_ids:
+        cover_rows = (
+            db.query(ReleaseMediaAsset.release_id, ReleaseMediaAsset.file_path)
+            .filter(
+                ReleaseMediaAsset.release_id.in_(release_ids),
+                ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+            )
+            .all()
+        )
+    release_cover_map: dict[int, str] = {}
+    for release_id, file_path in cover_rows:
+        rid = int(release_id)
+        if rid in release_cover_map:
+            continue
+        if file_path is None:
+            continue
+        path = str(file_path).strip()
+        if not path:
+            continue
+        release_cover_map[rid] = path
+
+    releases_payload = [
+        {
+            "id": int(release.id),
+            "slug": release.slug,
+            "title": release.title,
+            "type": release.type,
+            "release_date": release.release_date.isoformat() if release.release_date else None,
+            "cover_url": public_media_url_from_stored_path(
+                release_cover_map.get(int(release.id))
+            ),
+        }
+        for release in release_rows
+    ]
+
+    stream_counts_subq = (
+        db.query(
+            ListeningEvent.song_id.label("song_id"),
+            func.count(ListeningEvent.id).label("stream_count"),
+        )
+        .filter(
+            ListeningEvent.is_valid.is_(True),
+            ListeningEvent.validated_duration > 0,
+        )
+        .group_by(ListeningEvent.song_id)
+        .subquery()
+    )
+
+    track_query = (
+        db.query(
+            Song,
+            Release,
+            func.coalesce(stream_counts_subq.c.stream_count, 0).label("stream_count"),
+        )
+        .join(Release, Release.id == Song.release_id)
+        .outerjoin(stream_counts_subq, stream_counts_subq.c.song_id == Song.id)
+        .filter(
+            Song.artist_id == int(artist_id),
+            Song.deleted_at.is_(None),
+            Song.upload_status == "ready",
+            Release.state == RELEASE_STATE_PUBLISHED,
+        )
+    )
+
+    if sort == "new":
+        track_query = track_query.order_by(
+            Release.release_date.desc().nullslast(),
+            Song.created_at.desc(),
+            Song.id.desc(),
+        )
+    elif sort == "old":
+        track_query = track_query.order_by(
+            Release.release_date.asc().nullslast(),
+            Song.created_at.asc(),
+            Song.id.asc(),
+        )
+    else:
+        track_query = track_query.order_by(
+            func.coalesce(stream_counts_subq.c.stream_count, 0).desc(),
+            Song.created_at.desc(),
+            Song.id.desc(),
+        )
+
+    track_rows = track_query.limit(10).all()
+    song_ids = [int(row[0].id) for row in track_rows]
+    track_release_ids = sorted(
+        {
+            int(row[1].id)
+            for row in track_rows
+            if getattr(row[1], "id", None) is not None
+        }
+    )
+    media_rows = []
+    if song_ids:
+        media_rows = (
+            db.query(SongMediaAsset)
+            .filter(
+                SongMediaAsset.song_id.in_(song_ids),
+                SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO,
+            )
+            .all()
+        )
+
+    track_release_cover_rows = []
+    if track_release_ids:
+        track_release_cover_rows = (
+            db.query(ReleaseMediaAsset.release_id, ReleaseMediaAsset.file_path)
+            .filter(
+                ReleaseMediaAsset.release_id.in_(track_release_ids),
+                ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+            )
+            .all()
+        )
+    track_release_cover_map: dict[int, str] = {}
+    for release_id, file_path in track_release_cover_rows:
+        rid = int(release_id)
+        if rid in track_release_cover_map:
+            continue
+        if file_path is None:
+            continue
+        path = str(file_path).strip()
+        if not path:
+            continue
+        track_release_cover_map[rid] = path
+
+    master_map: dict[int, SongMediaAsset] = {}
+    for asset in media_rows:
+        sid = int(asset.song_id)
+        if asset.kind == SONG_MEDIA_KIND_MASTER_AUDIO and sid not in master_map:
+            master_map[sid] = asset
+
+    artist = _get_public_artist_or_404(db, int(artist_id))
+
+    tracks_payload = []
+    for song, release, stream_count in track_rows:
+        sid = int(song.id)
+        master = master_map.get(sid)
+        track_cover_url = public_media_url_from_stored_path(
+            track_release_cover_map.get(int(release.id))
+        )
+        if track_cover_url is None:
+            # Compatibility fallback while legacy song-cover data still exists.
+            track_cover_url = public_media_url_from_stored_path(effective_song_cover(db, song))
+        tracks_payload.append(
+            {
+                "id": sid,
+                "slug": song.slug,
+                "title": song.title,
+                "artist_name": artist.name,
+                "duration_seconds": song.duration_seconds,
+                "release_date": release.release_date.isoformat() if release.release_date else None,
+                "stream_count": int(stream_count or 0),
+                "cover_url": track_cover_url,
+                "audio_url": public_media_url_from_stored_path(master.file_path if master else None),
+                "playable": bool(master is not None),
+            }
+        )
+
+    return {
+        "artist_id": int(artist_id),
+        "sort": sort,
+        "releases": releases_payload,
+        "tracks": tracks_payload,
+    }
+
+
+@router.get(
+    "/studio/pending-approvals",
+    response_model=PendingApprovalsResponse | PendingApprovalsListResponse,
+)
+def get_studio_pending_approvals(
+    view: Literal["list"] | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    owned_artist_rows = (
+        db.query(Artist.id, Artist.name)
+        .filter(Artist.owner_user_id == int(user.id))
+        .all()
+    )
+    owned_artist_ids = {int(row[0]) for row in owned_artist_rows}
+    if not owned_artist_ids:
+        return []
+
+    release_id_rows = (
+        db.query(ReleaseParticipant.release_id)
+        .join(Release, Release.id == ReleaseParticipant.release_id)
+        .filter(
+            ReleaseParticipant.artist_id.in_(owned_artist_ids),
+            ReleaseParticipant.status == RELEASE_PARTICIPANT_STATUS_PENDING,
+            ReleaseParticipant.requires_approval.is_(True),
+        )
+        .distinct()
+        .all()
+    )
+    release_ids = [int(row[0]) for row in release_id_rows]
+    if not release_ids:
+        return []
+
+    grouped = _build_release_decision_payloads(
+        db=db,
+        release_ids=release_ids,
+        owned_artist_ids=owned_artist_ids,
+    )
+    ordered_release_ids = sorted(
+        release_ids,
+        key=lambda rid: (
+            0
+            if any(
+                bool(p.get("is_actionable_for_user")) and bool(p.get("blocking"))
+                for p in grouped[rid]["participants"]
+            )
+            else 1,
+            -int((grouped[rid]["_updated_at"] or grouped[rid]["_created_at"]).timestamp())
+            if (grouped[rid]["_updated_at"] or grouped[rid]["_created_at"]) is not None
+            else 0,
+            -rid,
+        ),
+    )
+    payload = []
+    for rid in ordered_release_ids:
+        item = dict(grouped[rid])
+        item.pop("_updated_at", None)
+        item.pop("_created_at", None)
+        if view == "list":
+            payload.append(
+                {
+                    "release": {
+                        "id": item["release"]["id"],
+                        "title": item["release"]["title"],
+                        "cover_url": item["release"]["cover_url"],
+                        "artist": item["release"]["artist"],
+                        "type": item["release"]["type"],
+                        "created_at": item["release"]["created_at"],
+                        "track_count": item["release"]["track_count"],
+                        "split_version": item["release"]["split_version"],
+                    },
+                    "approval_status": item["approval_status"],
+                    "pending_summary": item["pending_summary"],
+                    "participants": [
+                        {
+                            "artist_id": p["artist_id"],
+                            "artist_name": p["artist_name"],
+                            "role": p["role"],
+                            "status": p["status"],
+                            "approval_type": p["approval_type"],
+                            "blocking": p["blocking"],
+                            "is_actionable_for_user": bool(
+                                p.get("is_actionable_for_user", False)
+                            ),
+                        }
+                        for p in item["participants"]
+                    ],
+                }
+            )
+            continue
+        payload.append(item)
+    return payload
+
+
+@router.get("/studio/releases/{release_id}", response_model=ReleaseDetailResponse)
+def get_studio_release_detail(
+    release_id: int,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    owned_artist_rows = (
+        db.query(Artist.id, Artist.name)
+        .filter(Artist.owner_user_id == int(user.id))
+        .all()
+    )
+    owned_artist_ids = {int(row[0]) for row in owned_artist_rows}
+
+    release = db.query(Release).filter(Release.id == int(release_id)).first()
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found")
+
+    access_row = (
+        db.query(ReleaseParticipant.id)
+        .join(Artist, Artist.id == ReleaseParticipant.artist_id)
+        .filter(
+            ReleaseParticipant.release_id == int(release_id),
+            Artist.owner_user_id == int(user.id),
+        )
+        .first()
+    )
+    if access_row is None:
+        raise HTTPException(status_code=404, detail="Release not found")
+
+    grouped = _build_release_decision_payloads(
+        db=db,
+        release_ids=[int(release_id)],
+        owned_artist_ids=owned_artist_ids,
+    )
+    if int(release_id) not in grouped:
+        raise HTTPException(status_code=404, detail="Release not found")
+    item = grouped[int(release_id)]
+    payload = {
+        "release": {
+            **item["release"],
+            "approval_status": item["approval_status"],
+        },
+        "user_context": {
+            "owned_artist_ids": sorted(owned_artist_ids),
+            "pending_actions_count": sum(
+                1 for p in item["participants"] if bool(p.get("is_actionable_for_user"))
+            ),
+        },
+        "songs": item["songs"],
+        "splits": item["splits"],
+        "participants": item["participants"],
+        "pending_summary": item["pending_summary"],
+    }
+    return payload
+
+
+@router.get("/studio/{artist_id}/dashboard")
+def get_studio_artist_dashboard(
+    artist_id: int,
+    _owned_artist: Artist = Depends(require_artist_owner),
+):
+    return get_artist_dashboard(int(artist_id))
+
+
+@router.post("/studio/context")
+def post_studio_context(
+    body: StudioContextBody,
+    user: User = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    context = validate_context_for_user_or_403(
+        db=db,
+        user=user,
+        context_type=body.type,
+        context_id=int(body.id),
+    )
+    # Defensive re-check to keep endpoint fail-closed if helper behavior changes.
+    if not is_context_allowed_for_user(
+        db=db,
+        user=user,
+        context_type=context["type"],
+        context_id=int(context["id"]),
+    ):
+        raise HTTPException(status_code=403, detail="Context not allowed for this user")
+
+    user.current_context_type = str(context["type"])
+    user.current_context_id = int(context["id"])
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return {"current_context": get_current_context(db=db, user=user)}
+
+
 class StartSessionRequest(BaseModel):
     song_id: int
 
@@ -765,7 +1540,7 @@ class DevStreamRequest(BaseModel):
 def post_create_song(
     body: CreateSongBody,
     db=Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    _owned_artist: Artist = Depends(_require_owner_for_create_song),
 ):
     """
     Create a song with title, primary artist, optional featuring artists and credits.
@@ -774,11 +1549,6 @@ def post_create_song(
     title_stripped = (body.title or "").strip()
     if not title_stripped:
         raise HTTPException(status_code=400, detail="Title is required")
-    artist = db.query(Artist).filter(Artist.id == int(body.artist_id)).one_or_none()
-    if artist is None:
-        raise HTTPException(status_code=404, detail="Artist not found")
-    if artist.user_id is None or int(artist.user_id) != int(current_user.id):
-        raise HTTPException(status_code=403, detail="You do not own this artist")
     try:
         song = create_song_with_metadata(
             db,
@@ -840,7 +1610,12 @@ def list_subgenres_for_genre(genre_id: int, db=Depends(get_db)):
 
 
 @router.post("/releases")
-def post_create_release(body: CreateReleaseBody, db=Depends(get_db)):
+def post_create_release(
+    body: CreateReleaseBody,
+    db=Depends(get_db),
+    user: User = Depends(get_current_user),
+    _owned_artist: Artist = Depends(_require_owner_for_create_release),
+):
     """Create a draft release (single or album)."""
     try:
         rdt = datetime.fromisoformat(body.release_date.replace("Z", "+00:00"))
@@ -856,6 +1631,7 @@ def post_create_release(body: CreateReleaseBody, db=Depends(get_db)):
             artist_id=body.artist_id,
             release_type=body.release_type,
             release_date=rdt,
+            owner_user_id=int(user.id),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -863,6 +1639,162 @@ def post_create_release(body: CreateReleaseBody, db=Depends(get_db)):
         "release_id": int(release.id),
         "title": release.title,
         "type": release.type,
+    }
+
+
+@router.post("/studio/releases/{release_id}/publish")
+def post_studio_release_publish(
+    release_id: int,
+    db=Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    release = db.query(Release).filter(Release.id == int(release_id)).first()
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found")
+
+    try:
+        enforce_artist_ownership(
+            artist_id=int(release.artist_id),
+            user=user,
+            db=db,
+        )
+    except HTTPException as exc:
+        if int(exc.status_code) == 404:
+            raise HTTPException(status_code=404, detail="Release not found") from exc
+        raise
+
+    try:
+        published = publish_release(db, release_id=int(release_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "release_id": int(published.id),
+        "state": str(published.state),
+        "discoverable_at": (
+            published.discoverable_at.isoformat() if published.discoverable_at else None
+        ),
+    }
+
+
+@router.get("/studio/releases/{release_id}/approvals")
+def get_release_approvals(
+    release_id: int,
+    db=Depends(get_db),
+    _owned_release: Release = Depends(require_release_owner),
+):
+    rows = list_release_approvals(db, release_id=int(release_id))
+    return {
+        "release_id": int(release_id),
+        "participants": [
+            {
+                "artist_id": int(row.artist_id),
+                "role": row.role,
+                "status": row.status,
+                "approval_type": row.approval_type,
+                "requires_approval": bool(row.requires_approval),
+                "approved_at": row.approved_at.isoformat() if row.approved_at else None,
+                "rejection_reason": row.rejection_reason,
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.post("/studio/releases/{release_id}/approve", response_model=ApprovalActionResponse)
+def post_release_approve(
+    release_id: int,
+    body: ReleaseApprovalActionBody,
+    db=Depends(get_db),
+    user: User = Depends(get_current_user),
+    _participant_actor: ReleaseParticipant = Depends(_require_participant_actor_for_release_approval_action),
+):
+    try:
+        participant = approve_participation(
+            db,
+            release_id=int(release_id),
+            artist_id=int(body.artist_id),
+            user=user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    release = db.query(Release).filter(Release.id == int(release_id)).first()
+    release_approval_status = str(release.approval_status) if release is not None else None
+    approval_type = str(participant.approval_type)
+    return {
+        "status": "accepted",
+        "updated_participant": {
+            "artist_id": int(participant.artist_id),
+            "role": participant.role,
+            "approval_type": approval_type,
+            "blocking": approval_type == "split",
+            "status": participant.status,
+            "rejection_reason": participant.rejection_reason,
+            "approved_at": participant.approved_at.isoformat() if participant.approved_at else None,
+        },
+        "release_approval_status": release_approval_status,
+    }
+
+
+@router.post("/studio/releases/{release_id}/reject", response_model=ApprovalActionResponse)
+def post_release_reject(
+    release_id: int,
+    body: ReleaseApprovalActionBody,
+    db=Depends(get_db),
+    user: User = Depends(get_current_user),
+    _participant_actor: ReleaseParticipant = Depends(_require_participant_actor_for_release_approval_action),
+):
+    pre_role = str(_participant_actor.role)
+    pre_approval_type = str(_participant_actor.approval_type)
+    try:
+        reject_participation(
+            db,
+            release_id=int(release_id),
+            artist_id=int(body.artist_id),
+            user=user,
+            reason=body.reason,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    release = db.query(Release).filter(Release.id == int(release_id)).first()
+    release_approval_status = str(release.approval_status) if release is not None else None
+    participant = (
+        db.query(ReleaseParticipant)
+        .filter(
+            ReleaseParticipant.release_id == int(release_id),
+            ReleaseParticipant.artist_id == int(body.artist_id),
+        )
+        .first()
+    )
+    if participant is not None:
+        approval_type = str(participant.approval_type)
+        updated_participant = {
+            "artist_id": int(participant.artist_id),
+            "role": participant.role,
+            "approval_type": approval_type,
+            "blocking": approval_type == "split",
+            "status": participant.status,
+            "rejection_reason": participant.rejection_reason,
+            "approved_at": participant.approved_at.isoformat() if participant.approved_at else None,
+        }
+    else:
+        updated_participant = {
+            "artist_id": int(body.artist_id),
+            "role": pre_role,
+            "approval_type": pre_approval_type,
+            "blocking": pre_approval_type == "split",
+            "status": "rejected",
+            "rejection_reason": (str(body.reason).strip() if body.reason else None) or None,
+            "approved_at": None,
+        }
+    return {
+        "status": "rejected",
+        "updated_participant": updated_participant,
+        "release_approval_status": release_approval_status,
     }
 
 
@@ -906,8 +1838,9 @@ def get_song(song_id: int, db=Depends(get_db)):
         .first()
     )
     has_master_audio = master is not None
-    has_cover_art, cover_path_raw = effective_song_cover_art(db, song)
+    cover_path_raw = effective_song_cover(db, song)
     cover_url = public_media_url_from_stored_path(cover_path_raw)
+    has_cover_art = cover_path_raw is not None
 
     def _taxon(entity: Genre | Subgenre | None):
         if entity is None:
@@ -933,6 +1866,7 @@ def get_song(song_id: int, db=Depends(get_db)):
         "slug": song.slug,
         "title": song.title,
         "artist_id": song.artist_id,
+        "release_id": int(song.release_id) if song.release_id is not None else None,
         "upload_status": song.upload_status,
         "duration_seconds": song.duration_seconds,
         "featured_artist_ids": featured_artist_ids,
@@ -956,15 +1890,9 @@ def patch_song_metadata(
     song_id: int,
     body: PatchSongBody,
     db=Depends(get_db),
-    user: User = Depends(get_current_user),
+    song: Song = Depends(require_song_owner),
 ):
     """Update song metadata for the upload wizard; respects ready-state locks."""
-    try:
-        song = assert_user_owns_song(db, user, song_id)
-    except SongNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except SongOwnershipError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if int(body.artist_id) != int(song.artist_id):
         raise HTTPException(
             status_code=400,
@@ -995,15 +1923,12 @@ def patch_song_metadata(
 def delete_song_endpoint(
     song_id: int,
     db=Depends(get_db),
-    user: User = Depends(get_current_user),
+    song: Song = Depends(require_song_owner),
 ):
     """Soft-delete a song (sets deleted_at; owner-only)."""
-    try:
-        delete_owned_song(db, user, song_id)
-    except SongNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except SongOwnershipError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    song.deleted_at = datetime.utcnow()
+    db.add(song)
+    db.commit()
     return {"status": "ok", "song_id": int(song_id)}
 
 
@@ -1025,6 +1950,7 @@ def post_release_upload_cover(
     release_id: int,
     file: UploadFile = File(...),
     db=Depends(get_db),
+    _owned_release: Release = Depends(require_release_owner),
 ):
     """Upload cover art (JPEG/PNG) for a release; stored as ``ReleaseMediaAsset``."""
     try:
@@ -1050,6 +1976,7 @@ def post_release_upload_cover(
 
 
 _MAX_ARTIST_SEARCH_Q_LEN = 128
+_MAX_GLOBAL_SEARCH_Q_LEN = 128
 
 
 def _escape_like_pattern(s: str) -> str:
@@ -1087,6 +2014,24 @@ def search_artists(
     }
 
 
+@router.get("/search")
+def global_search(
+    q: str = Query(...),
+    limit: int = Query(10, ge=1, le=25),
+    db=Depends(get_db),
+):
+    trimmed = (q or "").strip()
+    if len(trimmed) < 2:
+        return {
+            "results": [],
+            "groups": {"artists": [], "tracks": [], "albums": []},
+            "meta": {"query": trimmed, "limit": int(limit)},
+        }
+    if len(trimmed) > _MAX_GLOBAL_SEARCH_Q_LEN:
+        trimmed = trimmed[:_MAX_GLOBAL_SEARCH_Q_LEN]
+    return search_global(db, query=trimmed, limit=int(limit))
+
+
 @router.get("/artists/{artist_id}")
 def get_artist(artist_id: int, db=Depends(get_db)):
     """Public artist record for clients (e.g. upload wizard)."""
@@ -1115,17 +2060,17 @@ def list_artist_songs(
     song_ids = [int(s.id) for s in songs]
     assets = (
         db.query(SongMediaAsset)
-        .filter(SongMediaAsset.song_id.in_(song_ids))
+        .filter(
+            SongMediaAsset.song_id.in_(song_ids),
+            SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO,
+        )
         .all()
     )
     master_by_sid: dict[int, SongMediaAsset] = {}
-    cover_by_sid: dict[int, SongMediaAsset] = {}
     for asset in assets:
         sid = int(asset.song_id)
         if asset.kind == SONG_MEDIA_KIND_MASTER_AUDIO:
             master_by_sid[sid] = asset
-        elif asset.kind == SONG_MEDIA_KIND_COVER_ART:
-            cover_by_sid[sid] = asset
 
     release_ids = {int(s.release_id) for s in songs if s.release_id is not None}
     releases_by_id: dict[int, Release] = {}
@@ -1150,16 +2095,11 @@ def list_artist_songs(
     for song in songs:
         sid = int(song.id)
         master = master_by_sid.get(sid)
-        cover = cover_by_sid.get(sid)
         has_master_audio = master is not None
         rel = releases_by_id.get(int(song.release_id)) if song.release_id is not None else None
-        if rel is not None and rel.type == RELEASE_TYPE_ALBUM:
-            acp = album_cover_path_by_rid.get(int(rel.id))
-            cover_url = public_media_url_from_stored_path(acp)
-        else:
-            cover_url = public_media_url_from_stored_path(
-                cover.file_path if cover else None,
-            )
+        acp = album_cover_path_by_rid.get(int(rel.id)) if rel is not None else None
+        cover_path = acp if rel is not None else effective_song_cover(db, song)
+        cover_url = public_media_url_from_stored_path(cover_path)
         audio_url = public_media_url_from_stored_path(
             master.file_path if master else None,
         )
@@ -1307,6 +2247,7 @@ def post_song_upload_audio(
     song_id: int,
     file: UploadFile = File(...),
     db=Depends(get_db),
+    _owned_song: Song = Depends(require_song_owner),
 ):
     """Upload master WAV for an existing song; updates ``file_path``, ``duration_seconds``, and ``upload_status``."""
     try:
@@ -1342,30 +2283,17 @@ def post_song_upload_cover(
     song_id: int,
     file: UploadFile = File(...),
     db=Depends(get_db),
+    _owned_song: Song = Depends(require_song_owner),
 ):
-    """Upload cover art (JPEG/PNG) for an existing song."""
-    try:
-        upload_song_cover_art(
-            db,
-            song_id,
-            file.file,
-            original_filename=file.filename,
-            content_type=file.content_type,
-        )
-    except CoverResolutionInvalidError:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "cover_resolution_invalid"},
-        )
-    except ValueError as exc:
-        if str(exc).strip() == "cover_managed_at_release":
-            return JSONResponse(
-                status_code=400,
-                content={"error": "cover_managed_at_release"},
-            )
-        raise _http_from_upload_value_error(exc) from exc
-
-    return {"status": "ok", "song_id": song_id}
+    """Deprecated: song-level cover upload is removed in release-centric model."""
+    logger.warning(
+        "deprecated_song_cover_upload_endpoint_hit",
+        extra={"song_id": int(song_id)},
+    )
+    raise HTTPException(
+        status_code=410,
+        detail="Song-level cover upload is deprecated. Use release cover upload.",
+    )
 
 
 @router.get("/api")
@@ -1418,24 +2346,40 @@ def tutorial():
     """
 
 
-@router.post("/artists/{artist_id}/songs")
+@router.post(
+    "/artists/{artist_id}/songs",
+    deprecated=True,
+    summary="(Deprecated) Legacy artist multipart song ingestion",
+    description=(
+        "Deprecated legacy ingestion shortcut. This endpoint will be removed in a future version. "
+        "Recommended flow: POST /songs -> POST /songs/{id}/upload-audio -> "
+        "POST /songs/{id}/upload-cover -> PUT /songs/{id}/splits."
+    ),
+)
 def upload_song(
     artist_id: int,
     title: str = Form(...),
     release_id: int | None = Form(default=None),
     file: UploadFile = File(...),
-    _permission_user: User = Depends(require_permission("upload_music")),
+    _current_user: User = Depends(get_current_user),
+    _owned_artist: Artist = Depends(require_artist_owner),
     db=Depends(get_db),
 ):
     """
-    Upload a new song for an artist
+    Deprecated legacy ingestion shortcut.
+    This endpoint is deprecated and will be removed in a future version.
+    Recommended flow: POST /songs -> upload-audio -> upload-cover -> splits.
     """
-    artist = db.query(Artist).filter(Artist.id == artist_id).first()
-    if artist is None:
-        raise HTTPException(status_code=404, detail="Artist not found")
-    if not can_edit_artist(_permission_user, artist, db=db):
-        raise HTTPException(status_code=403, detail="Not allowed to modify this artist")
-
+    timestamp_utc = datetime.utcnow().isoformat()
+    logger.warning(
+        "Using deprecated endpoint POST /artists/{artist_id}/songs",
+        extra={
+            "event": "legacy_song_upload_used",
+            "user_id": int(_current_user.id),
+            "artist_id": int(artist_id),
+            "timestamp": timestamp_utc,
+        },
+    )
     service = SongIngestionService()
     try:
         song = service.create_song(
@@ -1803,7 +2747,10 @@ def dev_events(
     summary="Preview payout distribution for one fan",
     description="Computes user-centric payout preview by song and expanded artist allocation.",
 )
-def get_payout(user_id: int):
+def get_payout(
+    user_id: int,
+    _authorized_user: User = Depends(require_self_or_admin),
+):
     songs = calculate_user_distribution(user_id)
     db = SessionLocal()
     try:
@@ -1847,19 +2794,13 @@ def put_song_splits(
     song_id: int,
     body: SetSongSplitsBody,
     db=Depends(get_db),
-    user: User = Depends(get_current_user),
+    song: Song = Depends(require_song_owner),
 ):
     """
     Replace all ``SongArtistSplit`` rows for a song. Validation runs before save.
 
     This is the supported application entry point for creating/updating splits.
     """
-    try:
-        song = assert_user_owns_song(db, user, song_id)
-    except SongNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except SongOwnershipError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if str(song.upload_status or "").strip().lower() == "ready":
         raise HTTPException(
             status_code=400,
@@ -1888,7 +2829,10 @@ def put_song_splits(
     summary="Compare user-centric and global models",
     description="Side-by-side model comparison for one user id.",
 )
-def compare(user_id: int):
+def compare(
+    user_id: int,
+    _authorized_user: User = Depends(require_self_or_admin),
+):
     return compare_models(user_id)
 
 
@@ -1901,12 +2845,8 @@ def artist_streams(
     artist_id: int,
     range: str = Query(..., description="Time range preset"),
     song_id: Optional[int] = Query(None, description="Optional song filter"),
+    _owned_artist: Artist = Depends(require_artist_owner),
 ):
-    db = SessionLocal()
-    try:
-        _get_public_artist_or_404(db, artist_id)
-    finally:
-        db.close()
     return get_artist_streams_over_time(
         artist_id=artist_id,
         range=range,
@@ -1922,12 +2862,8 @@ def artist_streams(
 def artist_top_songs(
     artist_id: int,
     range: str = Query(..., description="Time range preset"),
+    _owned_artist: Artist = Depends(require_artist_owner),
 ):
-    db = SessionLocal()
-    try:
-        _get_public_artist_or_404(db, artist_id)
-    finally:
-        db.close()
     return get_artist_top_songs(
         artist_id=artist_id,
         range=range,
@@ -1942,12 +2878,8 @@ def artist_top_songs(
 def artist_top_fans(
     artist_id: int,
     range: str = Query(..., description="Time range preset"),
+    _owned_artist: Artist = Depends(require_artist_owner),
 ):
-    db = SessionLocal()
-    try:
-        _get_public_artist_or_404(db, artist_id)
-    finally:
-        db.close()
     return get_artist_top_fans(
         artist_id=artist_id,
         range=range,
@@ -1962,17 +2894,16 @@ def artist_top_fans(
 def artist_insights(
     artist_id: int,
     range: str = Query("last_30_days", description="Time range preset"),
+    _owned_artist: Artist = Depends(require_artist_owner),
 ):
-    db = SessionLocal()
-    try:
-        _get_public_artist_or_404(db, artist_id)
-    finally:
-        db.close()
     return get_artist_insights(artist_id=artist_id, range=range)
 
 
 @router.get("/dashboard/{user_id}", response_class=HTMLResponse)
-def dashboard(user_id: int):
+def dashboard(
+    user_id: int,
+    _authorized_user: User = Depends(require_self_or_admin),
+):
     data = compare_models(user_id)
 
     html = f"""
@@ -2012,13 +2943,10 @@ def dashboard(user_id: int):
 
 
 @router.get("/artist-dashboard/{artist_id}", response_class=HTMLResponse)
-def artist_dashboard(artist_id: int):
-    guard_db = SessionLocal()
-    try:
-        _get_public_artist_or_404(guard_db, artist_id)
-    finally:
-        guard_db.close()
-
+def artist_dashboard(
+    artist_id: int,
+    _owned_artist: Artist = Depends(require_artist_owner),
+):
     data = get_artist_dashboard(artist_id)
     diff = data.get("difference")
     diff_value = float(diff or 0)
@@ -2637,10 +3565,15 @@ def admin_payouts_ui(
 
 
 @router.get("/artist-payouts/{artist_id}", response_class=HTMLResponse)
-def artist_payouts(artist_id: int):
+def artist_payouts(
+    artist_id: int,
+    _owned_artist: Artist = Depends(require_artist_owner),
+):
     db = SessionLocal()
     try:
-        artist = _get_public_artist_or_404(db, artist_id)
+        artist = db.query(Artist).filter(Artist.id == int(artist_id)).first()
+        if artist is None:
+            raise HTTPException(status_code=404, detail="Artist not found")
 
         paid_cents, accrued_cents, pending_cents = artist_ledger_bucket_cents(
             db, artist_id
@@ -2776,13 +3709,10 @@ def artist_payouts(artist_id: int):
 
 
 @router.get("/artist-analytics/{artist_id}", response_class=HTMLResponse)
-def artist_analytics(artist_id: int):
-    db = SessionLocal()
-    try:
-        _get_public_artist_or_404(db, artist_id)
-    finally:
-        db.close()
-
+def artist_analytics(
+    artist_id: int,
+    _owned_artist: Artist = Depends(require_artist_owner),
+):
     html = f"""
     {_artist_hub_html_head(
         f"Artist {artist_id} — Analytics",

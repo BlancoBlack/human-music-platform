@@ -48,7 +48,6 @@ def client_and_session():
         seed_db.add_all(
             [
                 Permission(name="admin_full_access"),
-                Permission(name="upload_music"),
                 Permission(name="edit_own_artist"),
                 Permission(name="view_analytics"),
                 Permission(name="create_playlist"),
@@ -63,14 +62,6 @@ def client_and_session():
                 RolePermission(
                     role_id=role_rows["admin"],
                     permission_id=permission_rows["admin_full_access"],
-                ),
-                RolePermission(
-                    role_id=role_rows["admin"],
-                    permission_id=permission_rows["upload_music"],
-                ),
-                RolePermission(
-                    role_id=role_rows["artist"],
-                    permission_id=permission_rows["upload_music"],
                 ),
                 RolePermission(
                     role_id=role_rows["artist"],
@@ -379,7 +370,6 @@ def test_me_includes_permissions_from_assigned_roles(client_and_session) -> None
     me = r_me.json()
     assert "admin" in me["roles"]
     assert "admin_full_access" in me["permissions"]
-    assert "upload_music" in me["permissions"]
 
 
 def test_me_multi_role_permissions_union(client_and_session) -> None:
@@ -409,7 +399,6 @@ def test_me_multi_role_permissions_union(client_and_session) -> None:
     me = r_me.json()
     assert "artist" in me["roles"]
     assert "curator" in me["roles"]
-    assert "upload_music" in me["permissions"]
     assert "edit_own_artist" in me["permissions"]
     assert "view_analytics" in me["permissions"]
     assert "create_playlist" in me["permissions"]
@@ -480,7 +469,6 @@ def test_register_artist_creates_artist_with_owner_and_onboarding_pending(
         user = db.query(User).filter(User.email == "artist.register@example.com").one()
         artist = db.query(Artist).filter(Artist.id == int(body["artist_id"])).one()
         assert int(artist.owner_user_id) == int(user.id)
-        assert int(artist.user_id) == int(user.id)
         assert bool(user.onboarding_completed) is False
     finally:
         db.close()

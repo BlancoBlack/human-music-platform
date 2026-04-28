@@ -62,8 +62,6 @@ def ensure_auth_user_schema(engine: Engine) -> None:
     - Extends legacy ``users`` (id, username) with email, password_hash, is_active,
       is_email_verified, created_at.
     - Creates ``user_profiles`` and ``user_roles``.
-    - Adds nullable ``artists.user_id`` for linking Artist → User.
-
     Non-SQLite engines: no-op (rely on create_all / external migrations).
     """
     if engine.dialect.name != "sqlite":
@@ -158,20 +156,6 @@ def ensure_auth_user_schema(engine: Engine) -> None:
                     "ON user_roles (user_id)"
                 )
             )
-
-        if _sqlite_table_exists(conn, "artists") and not _pragma_column_exists(
-            conn, "artists", "user_id"
-        ):
-            logger.info("Applying missing column: artists.user_id")
-            conn.execute(
-                text("ALTER TABLE artists ADD COLUMN user_id INTEGER REFERENCES users (id)")
-            )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_artists_user_id ON artists (user_id)"
-                )
-            )
-
 
 def ensure_refresh_token_schema(engine: Engine) -> None:
     """Idempotent SQLite: table for refresh JWT revocation (logout)."""

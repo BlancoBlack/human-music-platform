@@ -24,6 +24,7 @@ def _display_name(first: str, last: str) -> str:
 
 def upsert_seed_users(db: Session, profiles: Sequence[dict[str, object]]) -> list[User]:
     ensure_default_roles(db)
+    admin_user = _upsert_seed_admin_user(db)
     users: list[User] = []
     for profile in profiles:
         first = str(profile["first"])
@@ -61,7 +62,11 @@ def upsert_seed_users(db: Session, profiles: Sequence[dict[str, object]]) -> lis
             assign_role_to_user(db, user_id=int(row.id), role_name="listener")
         db.flush()
         users.append(row)
-    _upsert_seed_admin_user(db)
+    # Keep deterministic ordering: admin inserted first, then listener users.
+    # This allows seed artist owner_user_id alignment with artist IDs when
+    # treasury occupies artist_id=1.
+    if admin_user is None:
+        raise RuntimeError("Seed admin user missing after upsert.")
     return users
 
 

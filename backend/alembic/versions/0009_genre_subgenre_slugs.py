@@ -13,6 +13,7 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import text
+from app.core.sqlite_migration_utils import safe_sqlite_batch_op
 
 revision: str = "0009_genre_subgenre_slugs"
 down_revision: Union[str, Sequence[str], None] = "0008_release_media_assets"
@@ -100,12 +101,13 @@ def upgrade() -> None:
 
     if table_exists(bind, "genres") and column_exists(bind, "genres", "slug"):
         if dialect == "sqlite":
-            with op.batch_alter_table("genres") as batch:
+            def _genres_not_null(batch) -> None:
                 batch.alter_column(
                     "slug",
                     existing_type=sa.String(length=128),
                     nullable=False,
                 )
+            safe_sqlite_batch_op(op, "genres", _genres_not_null)
         else:
             op.alter_column(
                 "genres",
@@ -116,12 +118,13 @@ def upgrade() -> None:
 
     if table_exists(bind, "subgenres") and column_exists(bind, "subgenres", "slug"):
         if dialect == "sqlite":
-            with op.batch_alter_table("subgenres") as batch:
+            def _subgenres_not_null(batch) -> None:
                 batch.alter_column(
                     "slug",
                     existing_type=sa.String(length=128),
                     nullable=False,
                 )
+            safe_sqlite_batch_op(op, "subgenres", _subgenres_not_null)
         else:
             op.alter_column(
                 "subgenres",

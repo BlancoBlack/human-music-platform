@@ -134,14 +134,8 @@ function ArtistCatalogInner() {
   );
 
   useEffect(() => {
-    if (!artistValid) {
-      setSongs(null);
-      setLoadError(null);
-      return;
-    }
+    if (!artistValid) return;
     let cancelled = false;
-    setSongs(null);
-    setLoadError(null);
     void fetchArtistSongs(aid)
       .then((data) => {
         if (!cancelled) setSongs(data.songs ?? []);

@@ -21,7 +21,6 @@ export default function AlbumSlugPage() {
   useEffect(() => {
     if (!slug.trim()) return;
     let cancelled = false;
-    setState({ kind: "loading" });
     void fetchAlbumBySlug(slug)
       .then((data) => {
         if (cancelled) return;

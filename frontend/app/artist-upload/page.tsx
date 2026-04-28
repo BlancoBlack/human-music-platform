@@ -31,22 +31,22 @@ function ArtistUploadInner() {
     idParam != null && String(idParam).trim() !== "";
   const forceSingleWizard = hasIdInUrl || flowSingle;
 
-  const [showResumePrompt, setShowResumePrompt] = useState(false);
-  const [resumeSongId, setResumeSongId] = useState<number | null>(null);
+  const [resumeSongId, setResumeSongId] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const rawLs = localStorage.getItem(UPLOAD_WIZARD_SONG_STORAGE_KEY);
+    const sid = rawLs ? parseInt(rawLs, 10) : NaN;
+    return Number.isFinite(sid) && sid > 0 ? sid : null;
+  });
   const [resumeUploadStatus, setResumeUploadStatus] = useState<string | null>(
     null,
   );
   const [headerArtistName, setHeaderArtistName] = useState<string | null>(null);
   const [startNewError, setStartNewError] = useState<string | null>(null);
   const [startNewBusy, setStartNewBusy] = useState(false);
-  const hasResumeState = showResumePrompt && resumeSongId != null;
+  const hasResumeState = !hasIdInUrl && resumeSongId != null;
 
   useEffect(() => {
-    if (!artistValid) {
-      setHeaderArtistName(null);
-      return;
-    }
-    setHeaderArtistName(null);
+    if (!artistValid) return;
     let cancelled = false;
     void fetchArtist(aid)
       .then((artist) => {
@@ -61,33 +61,8 @@ function ArtistUploadInner() {
   }, [artistValid, aid]);
 
   useEffect(() => {
-    if (!artistValid) {
-      setShowResumePrompt(false);
-      setResumeSongId(null);
-      return;
-    }
-    if (hasIdInUrl) {
-      setShowResumePrompt(false);
-      return;
-    }
-    const rawLs = localStorage.getItem(UPLOAD_WIZARD_SONG_STORAGE_KEY);
-    const sid = rawLs ? parseInt(rawLs, 10) : NaN;
-    if (Number.isFinite(sid) && sid > 0) {
-      setResumeSongId(sid);
-      setShowResumePrompt(true);
-    } else {
-      setResumeSongId(null);
-      setShowResumePrompt(false);
-    }
-  }, [artistValid, hasIdInUrl]);
-
-  useEffect(() => {
-    if (!showResumePrompt || resumeSongId == null) {
-      setResumeUploadStatus(null);
-      return;
-    }
+    if (!hasResumeState || resumeSongId == null) return;
     let cancelled = false;
-    setResumeUploadStatus(null);
     void fetchSong(resumeSongId)
       .then((song) => {
         if (!cancelled) setResumeUploadStatus(song.upload_status);
@@ -97,7 +72,6 @@ function ArtistUploadInner() {
         if (e instanceof ApiNotFoundError) {
           localStorage.removeItem(UPLOAD_WIZARD_SONG_STORAGE_KEY);
           setResumeSongId(null);
-          setShowResumePrompt(false);
           setResumeUploadStatus(null);
           return;
         }
@@ -106,7 +80,7 @@ function ArtistUploadInner() {
     return () => {
       cancelled = true;
     };
-  }, [showResumePrompt, resumeSongId]);
+  }, [hasResumeState, resumeSongId]);
 
   const attemptDeleteAndRestart = () => {
     if (resumeSongId == null) return;

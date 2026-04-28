@@ -11,6 +11,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from app.core.sqlite_migration_utils import safe_sqlite_batch_op
 
 revision: str = "0015_artist_owner_user_id"
 down_revision: Union[str, Sequence[str], None] = "0014_user_roles_role_id_nullable_fk"
@@ -73,7 +74,8 @@ def downgrade() -> None:
         op.drop_constraint(FK_NAME, "artists", type_="foreignkey")
 
     if bind.dialect.name == "sqlite":
-        with op.batch_alter_table("artists") as batch_op:
+        def _revert(batch_op) -> None:
             batch_op.drop_column("owner_user_id")
+        safe_sqlite_batch_op(op, "artists", _revert)
     else:
         op.drop_column("artists", "owner_user_id")

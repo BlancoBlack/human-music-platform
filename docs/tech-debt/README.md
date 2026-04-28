@@ -32,9 +32,9 @@ This folder tracks **intentional deferrals** and **known gaps** from building th
 | [storage_and_media.md](./storage_and_media.md) | **MEDIUM:** Local `/uploads`, readable filenames, public paths → object storage, CDN, signed URLs, UUID keys, transcoding |
 | [ux.md](./ux.md) | Surfaces around player, uploads, catalog, errors |
 | [search_scalability.md](./search_scalability.md) | **Deep dive:** artist search implementation, limits, options (Postgres/SQLite/external), upgrade triggers |
-| [auth-and-wallet.md](./auth-and-wallet.md) | **HIGH (future):** Deferred custodial/MPC wallet, KMS, signing isolation; OAuth/Web3Auth; migration from JWT + `Artist.payout_wallet_address` |
+| [auth-and-wallet.md](./auth-and-wallet.md) | **HIGH:** Current auth/wallet migration blockers and security debt (future architecture moved to `docs/future/auth-and-wallet-architecture.md`) |
 | [auth-system.md](./auth-system.md) | **Auth umbrella:** refresh families / reuse / logout-all, CSRF, email flows, DB email NOT NULL, legacy header removal, frontend session, JWT risks, production checklist |
-| [discovery-advanced-system.md](./discovery-advanced-system.md) | **Discovery future:** advanced ranking blueprint + explicit V1 discovery gaps (metadata, curator system, cultural context, real-time signals, richer personalization) |
+| [discovery-advanced-system.md](./discovery-advanced-system.md) | **Discovery debt:** current V1 limitations (future ranking blueprint moved to `docs/future/discovery-advanced-system.md`) |
 | [roles.md](./roles.md) | **Cross-domain onboarding/roles debt:** role duplication, route guard scope, onboarding-state constraints, resolver/redirect risks |
 | [startup-schema-seed-separation.md](./startup-schema-seed-separation.md) | **HISTORICAL / MOSTLY RESOLVED:** documents the prior startup/schema/seed coupling and the adopted Alembic-first + explicit-seed model |
 
@@ -58,6 +58,13 @@ This folder tracks **intentional deferrals** and **known gaps** from building th
 7. **MEDIUM storage and media** ([storage_and_media.md](./storage_and_media.md)) before production scale or when private/unreleased playback policy is required (includes transcoding when egress/mobile matters).
 8. **Product** ([product.md](./product.md)) — monetization, onboarding, dashboard, public API — after reliability baseline.
 9. **LOW advanced player UX** ([player_ux.md](./player_ux.md)) — queue drawer, waveform, up-next preview — after streaming stability; optional before beta/public if UX is a launch gate.
+
+## Future layer
+
+Forward-looking system designs now live in `docs/future/`:
+
+- `docs/future/discovery-advanced-system.md`
+- `docs/future/auth-and-wallet-architecture.md`
 
 ---
 

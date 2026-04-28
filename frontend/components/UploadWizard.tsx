@@ -21,6 +21,7 @@ import {
   parseErrorPayload,
   patchSongMetadata,
   putSongSplits,
+  postStudioReleasePublish,
   searchArtists,
   type ArtistPublic,
   type SongDetail,
@@ -95,21 +96,24 @@ function buildWizardUrl(
   return q ? `${basePath}?${q}` : basePath;
 }
 
+function clearStoredWizardSession() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(STORAGE_KEY);
+}
+
 function deriveWizardStep(
   song: SongDetail | null,
   hasSongId: boolean,
-  opts: { mode: "single" | "album-track"; albumCoverAdvance: boolean },
+  opts: { mode: "single" | "album-track" },
 ): 1 | 2 | 3 | 4 | null {
   if (!hasSongId) return 1;
   if (!song) return null;
   if (opts.mode === "album-track") {
     if (!song.has_master_audio) return 2;
-    if (!opts.albumCoverAdvance) return 3;
     if (song.upload_status === "ready") return 4;
-    return 3;
+    return 2;
   }
-  /* Standalone single: open step 1 when ready so catalog "Edit" can change unlocked fields. */
-  if (song.upload_status === "ready") return 1;
+  if (song.upload_status === "ready") return 4;
   if (!song.has_master_audio) return 2;
   if (!song.has_cover_art) return 3;
   return 4;
@@ -428,6 +432,7 @@ export type UploadWizardProps = {
   /** When embedding for album: existing song to edit, or null for a new track. */
   initialSongId?: number | null;
   onAlbumTrackSaved?: () => void;
+  onAlbumTrackNext?: () => void;
 };
 
 export function UploadWizard({
@@ -442,6 +447,7 @@ export function UploadWizard({
   trackCount = 1,
   initialSongId,
   onAlbumTrackSaved,
+  onAlbumTrackNext,
 }: UploadWizardProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -450,13 +456,14 @@ export function UploadWizard({
   const isAlbumTrack = mode === "album-track";
 
   const [songId, setSongId] = useState<number | null>(null);
-  const [albumCoverAdvance, setAlbumCoverAdvance] = useState(false);
   const [song, setSong] = useState<SongDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [coverError, setCoverError] = useState<string | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishBusy, setPublishBusy] = useState(false);
   const [coverBust, setCoverBust] = useState(0);
 
   const [title, setTitle] = useState("");
@@ -766,29 +773,10 @@ export function UploadWizard({
   }, []);
 
   useEffect(() => {
-    if (isAlbumTrack) {
-      setAlbumCoverAdvance(false);
-    }
-  }, [isAlbumTrack, initialSongId, releaseId]);
-
-  useEffect(() => {
-    if (!isAlbumTrack || song == null || songId == null || initialSongId == null) {
-      return;
-    }
-    if (
-      song.id === initialSongId &&
-      song.has_master_audio &&
-      song.upload_status === "ready"
-    ) {
-      setAlbumCoverAdvance(true);
-    }
-  }, [isAlbumTrack, song, songId, initialSongId]);
-
-  useEffect(() => {
     if (
       !isAlbumTrack ||
-      !albumCoverAdvance ||
       songId == null ||
+      !song?.has_master_audio ||
       song?.upload_status === "ready"
     ) {
       return;
@@ -799,8 +787,8 @@ export function UploadWizard({
     return () => window.clearInterval(t);
   }, [
     isAlbumTrack,
-    albumCoverAdvance,
     songId,
+    song?.has_master_audio,
     song?.upload_status,
     refreshSong,
   ]);
@@ -855,10 +843,12 @@ export function UploadWizard({
     () =>
       deriveWizardStep(song, songId != null, {
         mode,
-        albumCoverAdvance,
       }),
-    [song, songId, mode, albumCoverAdvance],
+    [song, songId, mode],
   );
+
+  const showSongHydrating = songId != null && song == null && !loadError;
+  const showAudioStepShell = step === 2 || showSongHydrating;
 
   const persistSongId = (id: number) => {
     setSongId(id);
@@ -866,7 +856,7 @@ export function UploadWizard({
       void refreshSong(id);
       return;
     }
-    localStorage.setItem(STORAGE_KEY, String(id));
+    window.localStorage.setItem(STORAGE_KEY, String(id));
     router.replace(
       buildWizardUrl(basePath, { fixedArtistId, songId: id }),
     );
@@ -875,7 +865,7 @@ export function UploadWizard({
   const clearSession = () => {
     if (!isAlbumTrack) {
       router.replace(buildWizardUrl(basePath, { fixedArtistId, songId: null }));
-      localStorage.removeItem(STORAGE_KEY);
+      clearStoredWizardSession();
     }
     setSongId(null);
     setSong(null);
@@ -900,7 +890,6 @@ export function UploadWizard({
     setAudioError(null);
     setCoverError(null);
     setLoadError(null);
-    setAlbumCoverAdvance(false);
     setMoodInput("");
     setCountryCode("");
     setCity("");
@@ -1067,7 +1056,6 @@ export function UploadWizard({
           );
           return;
         }
-        setAlbumCoverAdvance(false);
       } else {
         const res = await apiFetch(`/songs`, {
           method: "POST",
@@ -1158,10 +1146,16 @@ export function UploadWizard({
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await apiFetch(`/songs/${songId}/upload-cover`, {
+      const releaseId = song?.release_id;
+      if (releaseId == null) {
+        setCoverError("Release not found for this song. Refresh and try again.");
+        return;
+      }
+      const res = await apiFetch(`/releases/${releaseId}/upload-cover`, {
         method: "POST",
         body: fd,
       });
+      console.log("Uploading cover via release:", releaseId);
       if (!res.ok) {
         const { code, detail } = await parseErrorPayload(res);
         if (code === "cover_resolution_invalid") {
@@ -1180,12 +1174,42 @@ export function UploadWizard({
     }
   };
 
-  const stepsMeta = [
-    { n: 1 as const, label: "Metadata" },
-    { n: 2 as const, label: "Audio" },
-    { n: 3 as const, label: "Cover" },
-    { n: 4 as const, label: "Ready" },
-  ];
+  const submitPublishRelease = async () => {
+    setPublishError(null);
+    if (song?.release_id == null) {
+      setPublishError("Release not found for this song.");
+      return;
+    }
+    setPublishBusy(true);
+    try {
+      const releaseId = Number(song.release_id);
+      console.log("Publishing release:", releaseId);
+      await postStudioReleasePublish(releaseId);
+      if (!isAlbumTrack) {
+        clearStoredWizardSession();
+      }
+      router.push("/studio/catalog");
+    } catch (e) {
+      setPublishError(
+        e instanceof Error ? e.message : "Could not publish release.",
+      );
+    } finally {
+      setPublishBusy(false);
+    }
+  };
+
+  const stepsMeta = isAlbumTrack
+    ? [
+        { n: 1 as const, label: "Metadata" },
+        { n: 2 as const, label: "Audio" },
+        { n: 4 as const, label: "Ready" },
+      ]
+    : [
+        { n: 1 as const, label: "Metadata" },
+        { n: 2 as const, label: "Audio" },
+        { n: 3 as const, label: "Cover" },
+        { n: 4 as const, label: "Ready" },
+      ];
 
   const coverSrc =
     song?.cover_url != null
@@ -1229,9 +1253,7 @@ export function UploadWizard({
 
       <ol className="mb-10 flex gap-2 border-b border-neutral-200 pb-4 dark:border-neutral-800">
         {stepsMeta.map(({ n, label }) => {
-          const coverStepDone = isAlbumTrack
-            ? albumCoverAdvance
-            : !!song?.has_cover_art;
+          const coverStepDone = !!song?.has_cover_art;
           const done =
             (n === 1 && songId != null) ||
             (n === 2 && !!song?.has_master_audio) ||
@@ -1268,7 +1290,7 @@ export function UploadWizard({
         })}
       </ol>
 
-      {songId != null && step === null && !loadError && (
+      {showSongHydrating && (
         <p className="mb-6 text-sm text-neutral-500" aria-live="polite">
           Loading song…
         </p>
@@ -1290,7 +1312,7 @@ export function UploadWizard({
         </div>
       )}
 
-      {song && (
+      {song ? (
         <div className="mb-6 flex flex-wrap items-center gap-3">
           <span className="text-sm text-neutral-500">Status</span>
           <span className="rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium uppercase tracking-wide dark:bg-neutral-800">
@@ -1303,7 +1325,9 @@ export function UploadWizard({
             </span>
           </span>
         </div>
-      )}
+      ) : showSongHydrating ? (
+        <div className="mb-6 h-6 w-72 rounded bg-neutral-200 dark:bg-neutral-800" aria-hidden />
+      ) : null}
 
       {step === 1 && (
         <section className="space-y-6 rounded-xl border border-neutral-200 p-6 dark:border-neutral-800">
@@ -1876,163 +1900,118 @@ export function UploadWizard({
         </section>
       )}
 
-      {step === 2 && song && (
-        <section className="space-y-6 rounded-xl border border-neutral-200 p-6 dark:border-neutral-800">
-          <h2 className="text-lg font-medium">Master audio (WAV)</h2>
-
-          {song.has_master_audio ? (
+      {showAudioStepShell && (
+        <section className="space-y-6 min-h-[400px] rounded-xl border border-neutral-200 p-6 dark:border-neutral-800">
+          {song ? (
             <>
-              <MasterAudioLockedCard song={song} />
-              <div>
-                <label className="mb-2 block text-sm text-neutral-500 dark:text-neutral-400">
-                  Replace master file
-                </label>
-                <input
-                  type="file"
-                  accept=".wav,audio/wav"
-                  disabled
-                  aria-disabled="true"
-                  className="block w-full cursor-not-allowed opacity-50 file:mr-4 file:rounded-lg file:border-0 file:bg-neutral-200 file:px-4 file:py-2 dark:file:bg-neutral-800"
-                />
-                <p className="mt-1 text-xs text-neutral-500">
-                  Upload disabled — master is locked for this song.
-                </p>
-              </div>
+              <h2 className="text-lg font-medium">Master audio (WAV)</h2>
+
+              {song.has_master_audio ? (
+                <>
+                  <MasterAudioLockedCard song={song} />
+                  {isAlbumTrack && song.upload_status !== "ready" ? (
+                    <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                      Finalizing track… this usually takes a few seconds.
+                    </p>
+                  ) : null}
+                  <div>
+                    <label className="mb-2 block text-sm text-neutral-500 dark:text-neutral-400">
+                      Replace master file
+                    </label>
+                    <input
+                      type="file"
+                      accept=".wav,audio/wav"
+                      disabled
+                      aria-disabled="true"
+                      className="block w-full cursor-not-allowed opacity-50 file:mr-4 file:rounded-lg file:border-0 file:bg-neutral-200 file:px-4 file:py-2 dark:file:bg-neutral-800"
+                    />
+                    <p className="mt-1 text-xs text-neutral-500">
+                      Upload disabled — master is locked for this song.
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-base text-neutral-700 dark:text-neutral-300">
+                    Upload your master WAV file (max 225MB)
+                  </p>
+                  <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                    After upload, this file cannot be replaced.
+                  </p>
+                  <div>
+                    <input
+                      type="file"
+                      accept=".wav,audio/wav"
+                      disabled={busy}
+                      aria-invalid={!!audioError}
+                      aria-describedby={audioError ? "audio-error" : undefined}
+                      className="block w-full text-sm file:mr-4 file:rounded-lg file:border-0 file:bg-neutral-100 file:px-4 file:py-2 dark:file:bg-neutral-800"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] ?? null;
+                        void submitAudio(f);
+                        e.target.value = "";
+                      }}
+                    />
+                    {audioError && (
+                      <p
+                        id="audio-error"
+                        className="mt-2 text-sm text-red-600 dark:text-red-400"
+                        role="alert"
+                      >
+                        {audioError}
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
             </>
           ) : (
-            <>
-              <p className="text-base text-neutral-700 dark:text-neutral-300">
-                Upload your master WAV file (max 225MB)
-              </p>
-              <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                After upload, this file cannot be replaced.
-              </p>
-              <div>
-                <input
-                  type="file"
-                  accept=".wav,audio/wav"
-                  disabled={busy}
-                  aria-invalid={!!audioError}
-                  aria-describedby={audioError ? "audio-error" : undefined}
-                  className="block w-full text-sm file:mr-4 file:rounded-lg file:border-0 file:bg-neutral-100 file:px-4 file:py-2 dark:file:bg-neutral-800"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0] ?? null;
-                    void submitAudio(f);
-                    e.target.value = "";
-                  }}
-                />
-                {audioError && (
-                  <p
-                    id="audio-error"
-                    className="mt-2 text-sm text-red-600 dark:text-red-400"
-                    role="alert"
-                  >
-                    {audioError}
-                  </p>
-                )}
-              </div>
-            </>
+            <div className="space-y-4" aria-hidden>
+              <div className="h-7 w-44 rounded bg-neutral-200 dark:bg-neutral-800" />
+              <div className="h-4 w-72 rounded bg-neutral-200 dark:bg-neutral-800" />
+              <div className="h-4 w-64 rounded bg-neutral-200 dark:bg-neutral-800" />
+              <div className="h-11 w-full rounded bg-neutral-200 dark:bg-neutral-800" />
+            </div>
           )}
         </section>
       )}
 
-      {step === 3 && song && (
+      {step === 3 && song && !isAlbumTrack && (
         <section className="space-y-6 rounded-xl border border-neutral-200 p-6 dark:border-neutral-800">
           <MasterAudioLockedCard song={song} />
 
-          <h2 className="text-lg font-medium">
-            {isAlbumTrack ? "Album cover" : "Cover art"}
-          </h2>
-          {isAlbumTrack ? (
-            <>
-              <p className="text-base text-neutral-700 dark:text-neutral-300">
-                This track uses the album cover. Per-track cover upload is
-                disabled.
-              </p>
-              {coverSrc ? (
-                <div>
-                  <p className="mb-2 text-sm text-neutral-500">Cover</p>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={coverSrc}
-                    alt="Album cover"
-                    className="max-h-64 w-auto rounded-lg border border-neutral-200 object-contain dark:border-neutral-700"
-                  />
-                </div>
-              ) : (
-                <p className="text-sm text-amber-800 dark:text-amber-200">
-                  No release cover found. Go back to album setup and upload
-                  cover art for this release.
-                </p>
-              )}
-              <input
-                type="file"
-                accept="image/jpeg,image/png,.jpg,.jpeg,.png"
-                disabled
-                aria-hidden
-                className="block w-full cursor-not-allowed opacity-50 file:mr-4 file:rounded-lg file:border-0 file:bg-neutral-200 file:px-4 file:py-2 dark:file:bg-neutral-800"
-              />
-              <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                Track cover upload is disabled for album tracks.
-              </p>
-              <button
-                type="button"
-                disabled={busy || !songId}
-                onClick={async () => {
-                  if (!songId) return;
-                  setBusy(true);
-                  try {
-                    await refreshSong(songId);
-                    setAlbumCoverAdvance(true);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-                className="w-full rounded-lg bg-neutral-900 py-3 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+          <h2 className="text-lg font-medium">Cover art</h2>
+          <p className="text-base text-neutral-700 dark:text-neutral-300">
+            Upload cover artwork (1400px–3000px)
+          </p>
+          <p className="text-sm text-neutral-500 dark:text-neutral-400">
+            JPEG or PNG, width and height each between 1400 and 3000 pixels.
+            You can replace the cover later if needed.
+          </p>
+          <div>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,.jpg,.jpeg,.png"
+              disabled={busy}
+              aria-invalid={!!coverError}
+              aria-describedby={coverError ? "cover-error" : undefined}
+              className="block w-full text-sm file:mr-4 file:rounded-lg file:border-0 file:bg-neutral-100 file:px-4 file:py-2 dark:file:bg-neutral-800"
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                void submitCover(f);
+                e.target.value = "";
+              }}
+            />
+            {coverError && (
+              <p
+                id="cover-error"
+                className="mt-2 text-sm text-red-600 dark:text-red-400"
+                role="alert"
               >
-                {busy ? "Working…" : "Continue"}
-              </button>
-              {song.upload_status !== "ready" && albumCoverAdvance && (
-                <p className="text-sm text-neutral-600 dark:text-neutral-400">
-                  Finalizing track… this usually takes a few seconds.
-                </p>
-              )}
-            </>
-          ) : (
-            <>
-              <p className="text-base text-neutral-700 dark:text-neutral-300">
-                Upload cover artwork (1400px–3000px)
+                {coverError}
               </p>
-              <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                JPEG or PNG, width and height each between 1400 and 3000 pixels.
-                You can replace the cover later if needed.
-              </p>
-              <div>
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,.jpg,.jpeg,.png"
-                  disabled={busy}
-                  aria-invalid={!!coverError}
-                  aria-describedby={coverError ? "cover-error" : undefined}
-                  className="block w-full text-sm file:mr-4 file:rounded-lg file:border-0 file:bg-neutral-100 file:px-4 file:py-2 dark:file:bg-neutral-800"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0] ?? null;
-                    void submitCover(f);
-                    e.target.value = "";
-                  }}
-                />
-                {coverError && (
-                  <p
-                    id="cover-error"
-                    className="mt-2 text-sm text-red-600 dark:text-red-400"
-                    role="alert"
-                  >
-                    {coverError}
-                  </p>
-                )}
-              </div>
-            </>
-          )}
+            )}
+          </div>
         </section>
       )}
 
@@ -2072,28 +2051,44 @@ export function UploadWizard({
             </div>
           )}
           {isAlbumTrack ? (
+            <p className="text-sm text-neutral-600 dark:text-neutral-400">
+              Track cover inherited from album.
+            </p>
+          ) : null}
+          {isAlbumTrack ? (
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <button
+                type="button"
+                onClick={() => onAlbumTrackNext?.()}
+                className="inline-flex w-full items-center justify-center rounded-lg bg-neutral-900 py-3 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+              >
+                Upload next track
+              </button>
+              <button
+                type="button"
+                onClick={() => onAlbumTrackSaved?.()}
+                className="inline-flex w-full items-center justify-center rounded-lg border border-neutral-300 py-3 text-sm font-medium text-neutral-800 dark:border-neutral-600 dark:text-neutral-100"
+              >
+                Album setup
+              </button>
+            </div>
+          ) : (
             <button
               type="button"
-              onClick={() => onAlbumTrackSaved?.()}
-              className="inline-flex w-full items-center justify-center rounded-lg bg-neutral-900 py-3 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
+              disabled={publishBusy}
+              onClick={() => {
+                void submitPublishRelease();
+              }}
+              className="inline-flex w-full items-center justify-center rounded-lg bg-[#F37D25] py-3 text-sm font-medium text-black disabled:opacity-60"
             >
-              Back to track list
+              {publishBusy ? "Publishing…" : "Publish release"}
             </button>
-          ) : (
-            <Link
-              href={`/track/${song.slug}`}
-              className="inline-flex w-full items-center justify-center rounded-lg bg-neutral-900 py-3 text-sm font-medium text-white dark:bg-neutral-100 dark:text-neutral-900"
-            >
-              View song
-            </Link>
           )}
-          <button
-            type="button"
-            onClick={clearSession}
-            className="w-full text-sm text-neutral-500 underline"
-          >
-            {isAlbumTrack ? "Discard and reset form" : "Start another upload"}
-          </button>
+          {publishError ? (
+            <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+              {publishError}
+            </p>
+          ) : null}
         </section>
       )}
     </UploadWizardPageLayout>

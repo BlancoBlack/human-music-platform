@@ -272,7 +272,6 @@ def auth_register(
             artist = Artist(
                 name=display_name,
                 owner_user_id=int(user.id),
-                user_id=int(user.id),
             )
             db.add(artist)
             db.flush()

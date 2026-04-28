@@ -11,7 +11,7 @@ of identity.
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request
@@ -24,13 +24,24 @@ from app.core.jwt_tokens import (
     decode_access_token,
     is_impersonation_token_payload,
 )
-from app.models.user import User
+from app.models.artist import Artist
+from app.models.label import Label
+from app.models.release import Release
+from app.models.release_participant import ReleaseParticipant
+from app.models.song import Song
+from app.models.user import VALID_CONTEXT_TYPES, User
 from app.models.user_role import UserRole
+from app.services.artist_access_service import get_artist_owner_id
 from app.services.rbac_service import has_permission, validate_role_exists
 
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
+
+
+class StudioContext(TypedDict):
+    type: str
+    id: int
 
 
 def _bearer_token_from_credentials(
@@ -228,6 +239,123 @@ def require_permission(permission_name: str):
     return _dependency
 
 
+def _has_artist_admin_override(user: User, db: Session) -> bool:
+    return has_permission(user, "admin_full_access", db=db) or has_permission(
+        user, "edit_any_artist", db=db
+    )
+
+
+def _has_user_admin_override(user: User, db: Session) -> bool:
+    if has_permission(user, "admin_full_access", db=db):
+        return True
+    return (
+        db.query(UserRole.id)
+        .filter(UserRole.user_id == int(user.id), UserRole.role == "admin")
+        .first()
+        is not None
+    )
+
+
+def enforce_artist_ownership(
+    *,
+    artist_id: int,
+    user: User,
+    db: Session,
+) -> Artist:
+    artist = db.query(Artist).filter(Artist.id == int(artist_id)).first()
+    if artist is None:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    if _has_artist_admin_override(user, db):
+        return artist
+    owner_id = get_artist_owner_id(artist)
+    if owner_id is None or int(owner_id) != int(user.id):
+        raise HTTPException(status_code=403, detail="Not owner of this artist")
+    return artist
+
+
+async def require_artist_owner(
+    artist_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Artist:
+    return enforce_artist_ownership(artist_id=int(artist_id), user=user, db=db)
+
+
+async def require_song_owner(
+    song_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Song:
+    song = (
+        db.query(Song)
+        .filter(Song.id == int(song_id), Song.deleted_at.is_(None))
+        .first()
+    )
+    if song is None:
+        raise HTTPException(status_code=404, detail="Song not found")
+    enforce_artist_ownership(artist_id=int(song.artist_id), user=user, db=db)
+    return song
+
+
+async def require_release_owner(
+    release_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Release:
+    release = db.query(Release).filter(Release.id == int(release_id)).first()
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found")
+    enforce_artist_ownership(artist_id=int(release.artist_id), user=user, db=db)
+    return release
+
+
+def enforce_participant_actor(
+    *,
+    release_id: int,
+    artist_id: int,
+    user: User,
+    db: Session,
+) -> ReleaseParticipant:
+    enforce_artist_ownership(artist_id=int(artist_id), user=user, db=db)
+    participant = (
+        db.query(ReleaseParticipant)
+        .filter(
+            ReleaseParticipant.release_id == int(release_id),
+            ReleaseParticipant.artist_id == int(artist_id),
+        )
+        .first()
+    )
+    if participant is None:
+        raise HTTPException(status_code=404, detail="Participant not found on this release")
+    return participant
+
+
+async def require_participant_actor(
+    release_id: int,
+    artist_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> ReleaseParticipant:
+    return enforce_participant_actor(
+        release_id=int(release_id),
+        artist_id=int(artist_id),
+        user=user,
+        db=db,
+    )
+
+
+async def require_self_or_admin(
+    user_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> User:
+    if int(user.id) == int(user_id):
+        return user
+    if _has_user_admin_override(user, db):
+        return user
+    raise HTTPException(status_code=403, detail="Not allowed to access this user")
+
+
 async def require_admin_user(
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
@@ -243,3 +371,83 @@ async def require_admin_user(
     if not is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+def _owned_artist_ids_for_user(db: Session, user_id: int) -> set[int]:
+    rows = (
+        db.query(Artist.id)
+        .filter(Artist.owner_user_id == int(user_id))
+        .all()
+    )
+    return {int(row[0]) for row in rows}
+
+
+def _owned_label_ids_for_user(db: Session, user_id: int) -> set[int]:
+    rows = (
+        db.query(Label.id)
+        .filter(Label.owner_user_id == int(user_id))
+        .all()
+    )
+    return {int(row[0]) for row in rows}
+
+
+def is_context_allowed_for_user(
+    *,
+    db: Session,
+    user: User,
+    context_type: str,
+    context_id: int,
+) -> bool:
+    ctype = str(context_type or "").strip().lower()
+    cid = int(context_id)
+    if ctype == "user":
+        return int(user.id) == cid
+    if ctype == "artist":
+        return cid in _owned_artist_ids_for_user(db, int(user.id))
+    if ctype == "label":
+        return cid in _owned_label_ids_for_user(db, int(user.id))
+    return False
+
+
+def validate_context_for_user_or_403(
+    *,
+    db: Session,
+    user: User,
+    context_type: str,
+    context_id: int,
+) -> StudioContext:
+    ctype = str(context_type or "").strip().lower()
+    if ctype not in VALID_CONTEXT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid context type")
+    cid = int(context_id)
+    if not is_context_allowed_for_user(
+        db=db,
+        user=user,
+        context_type=ctype,
+        context_id=cid,
+    ):
+        raise HTTPException(status_code=403, detail="Context not allowed for this user")
+    return {"type": ctype, "id": cid}
+
+
+def get_current_context(
+    *,
+    db: Session,
+    user: User,
+) -> StudioContext:
+    stored_type = getattr(user, "current_context_type", None)
+    stored_id = getattr(user, "current_context_id", None)
+    if stored_type is not None and stored_id is not None:
+        ctype = str(stored_type).strip().lower()
+        if ctype in VALID_CONTEXT_TYPES:
+            try:
+                return validate_context_for_user_or_403(
+                    db=db,
+                    user=user,
+                    context_type=ctype,
+                    context_id=int(stored_id),
+                )
+            except HTTPException as exc:
+                if int(exc.status_code) != 403:
+                    raise
+    return {"type": "user", "id": int(user.id)}

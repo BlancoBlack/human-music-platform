@@ -11,6 +11,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from app.core.sqlite_migration_utils import safe_sqlite_batch_op
 
 revision: str = "0012_song_soft_delete_deleted_at"
 down_revision: Union[str, Sequence[str], None] = "0011_song_credit_sound_designer"
@@ -43,7 +44,8 @@ def downgrade() -> None:
     if "deleted_at" not in existing:
         return
     if bind.dialect.name == "sqlite":
-        with op.batch_alter_table("songs") as batch_op:
+        def _revert(batch_op) -> None:
             batch_op.drop_column("deleted_at")
+        safe_sqlite_batch_op(op, "songs", _revert)
     else:
         op.drop_column("songs", "deleted_at")

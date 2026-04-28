@@ -13,6 +13,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from app.core.sqlite_migration_utils import safe_sqlite_batch_op
 
 revision: str = "0011_song_credit_sound_designer"
 down_revision: Union[str, Sequence[str], None] = "0010_song_credit_role_expand"
@@ -60,13 +61,19 @@ def upgrade() -> None:
 
     if dialect == "sqlite":
         had_role_ck = _check_exists(bind, "song_credit_entries", role_ck_name)
-        with op.batch_alter_table("song_credit_entries", recreate="always") as batch_op:
+        def _alter(batch_op) -> None:
             if had_role_ck:
                 batch_op.drop_constraint(role_ck_name, type_="check")
             batch_op.create_check_constraint(
                 role_ck_name,
                 _role_check_sql(),
             )
+        safe_sqlite_batch_op(
+            op,
+            "song_credit_entries",
+            _alter,
+            batch_kwargs={"recreate": "always"},
+        )
         return
 
     if _check_exists(bind, "song_credit_entries", role_ck_name):
@@ -87,13 +94,19 @@ def downgrade() -> None:
 
     if dialect == "sqlite":
         had_role_ck = _check_exists(bind, "song_credit_entries", role_ck_name)
-        with op.batch_alter_table("song_credit_entries", recreate="always") as batch_op:
+        def _revert(batch_op) -> None:
             if had_role_ck:
                 batch_op.drop_constraint(role_ck_name, type_="check")
             batch_op.create_check_constraint(
                 role_ck_name,
                 _old_role_check_sql(),
             )
+        safe_sqlite_batch_op(
+            op,
+            "song_credit_entries",
+            _revert,
+            batch_kwargs={"recreate": "always"},
+        )
         return
 
     if not _check_exists(bind, "song_credit_entries", role_ck_name):

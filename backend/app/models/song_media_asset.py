@@ -5,7 +5,6 @@ from app.core.database import Base
 
 # Stored in DB; keep in sync with CHECK constraint below.
 SONG_MEDIA_KIND_MASTER_AUDIO = "MASTER_AUDIO"
-SONG_MEDIA_KIND_COVER_ART = "COVER_ART"
 
 
 class SongMediaAsset(Base):
@@ -13,7 +12,7 @@ class SongMediaAsset(Base):
     __table_args__ = (
         UniqueConstraint("song_id", "kind", name="uq_song_media_assets_song_kind"),
         CheckConstraint(
-            "kind IN ('MASTER_AUDIO', 'COVER_ART')",
+            "kind IN ('MASTER_AUDIO')",
             name="ck_song_media_assets_kind",
         ),
     )

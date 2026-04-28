@@ -17,7 +17,7 @@ import logging
 import os
 import random
 import sys
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Sequence
 
@@ -65,9 +65,12 @@ from app.models.global_listening_aggregate import GlobalListeningAggregate  # no
 from app.models.listening_event import ListeningEvent  # noqa: E402
 from app.models.payout_batch import PayoutBatch  # noqa: E402
 from app.models.payout_line import PayoutLine  # noqa: E402
+from app.models.release_media_asset import (  # noqa: E402
+    RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+    ReleaseMediaAsset,
+)
 from app.models.song import Song  # noqa: E402
 from app.models.song_media_asset import (  # noqa: E402
-    SONG_MEDIA_KIND_COVER_ART,
     SONG_MEDIA_KIND_MASTER_AUDIO,
     SongMediaAsset,
 )
@@ -119,47 +122,70 @@ def _discovery_title_artist_pairs(artists: list[Artist]) -> list[tuple[str, int]
 
 
 def assign_seed_media(songs: Sequence[Song]) -> None:
-    """Set song pipeline fields and upsert master/cover media rows (after ``_upsert_songs``)."""
+    """Set song pipeline fields and upsert master media + release cover rows."""
     db = SessionLocal()
     try:
         for s in songs:
             row = db.query(Song).filter(Song.id == int(s.id)).first()
             if row is None:
                 continue
+            if row.release_id is None:
+                raise RuntimeError(
+                    f"Seed lifecycle violation: song {int(row.id)} missing release_id before media stage."
+                )
             row.file_path = MASTER_PATH
             row.duration_seconds = 180
             row.upload_status = "ready"
             sid = int(row.id)
 
-            for kind, path, mime in (
-                (SONG_MEDIA_KIND_MASTER_AUDIO, MASTER_PATH, "audio/wav"),
-                (SONG_MEDIA_KIND_COVER_ART, COVER_PATH, "image/png"),
-            ):
-                sha = hashlib.sha256(f"{sid}:{kind}:{path}".encode()).hexdigest()
-                asset = (
-                    db.query(SongMediaAsset)
+            kind = SONG_MEDIA_KIND_MASTER_AUDIO
+            path = MASTER_PATH
+            mime = "audio/wav"
+            sha = hashlib.sha256(f"{sid}:{kind}:{path}".encode()).hexdigest()
+            asset = (
+                db.query(SongMediaAsset)
+                .filter(
+                    SongMediaAsset.song_id == sid,
+                    SongMediaAsset.kind == kind,
+                )
+                .first()
+            )
+            if asset is None:
+                db.add(
+                    SongMediaAsset(
+                        song_id=sid,
+                        kind=kind,
+                        file_path=path,
+                        mime_type=mime,
+                        byte_size=2048,
+                        sha256=sha,
+                    )
+                )
+            else:
+                asset.file_path = path
+                asset.mime_type = mime
+                asset.byte_size = 2048
+                asset.sha256 = sha
+
+            if row.release_id is not None:
+                rma = (
+                    db.query(ReleaseMediaAsset)
                     .filter(
-                        SongMediaAsset.song_id == sid,
-                        SongMediaAsset.kind == kind,
+                        ReleaseMediaAsset.release_id == int(row.release_id),
+                        ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
                     )
                     .first()
                 )
-                if asset is None:
+                if rma is None:
                     db.add(
-                        SongMediaAsset(
-                            song_id=sid,
-                            kind=kind,
-                            file_path=path,
-                            mime_type=mime,
-                            byte_size=2048,
-                            sha256=sha,
+                        ReleaseMediaAsset(
+                            release_id=int(row.release_id),
+                            asset_type=RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+                            file_path=COVER_PATH,
                         )
                     )
                 else:
-                    asset.file_path = path
-                    asset.mime_type = mime
-                    asset.byte_size = 2048
-                    asset.sha256 = sha
+                    rma.file_path = COVER_PATH
         db.commit()
     finally:
         db.close()
