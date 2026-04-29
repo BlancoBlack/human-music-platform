@@ -8,7 +8,49 @@
 
 ## AUDIT SNAPSHOT (2026-04-29) — Studio, Analytics, Payouts, Roles
 
+### AUTH SYSTEM
+
+- Auth routes are mounted under `/auth` in `backend/app/main.py` via `app.include_router(auth_router, prefix="/auth", tags=["auth"])`.
+- `POST /auth/login` exists in `backend/app/api/auth_routes.py` and returns JSON `TokenResponse` with:
+  - `access_token` (JWT bearer),
+  - `refresh_token` (JSON-returned for tests/non-browser clients),
+  - `token_type` (`bearer`).
+- Login also sets an httpOnly cookie `hm_refresh_token` (path `/auth`) via `attach_refresh_cookie(...)` in `backend/app/api/auth_cookies.py`.
+- Access-token auth is enforced by `get_current_user` in `backend/app/api/deps.py`, which accepts only `Authorization: Bearer <access_jwt>` using FastAPI `HTTPBearer(auto_error=False)`.
+- Refresh flow (`POST /auth/refresh`) accepts refresh token from JSON or cookie; browser path is cookie-first (documented in code comments in `auth_routes.py` and frontend auth modules).
+- Access JWT claims are validated in `backend/app/core/jwt_tokens.py` (`decode_access_token`):
+  - requires `exp`, `iat`, `sub`,
+  - enforces `typ=access` or `typ=access_impersonation`.
+
+### ADMIN ACCESS
+
+- There is no `is_admin` field on `User` (`backend/app/models/user.py`).
+- Admin is role-based through `user_roles` (`backend/app/models/user_role.py`) and checked by `require_admin_user` in `backend/app/api/deps.py`.
+- `require_admin_user` requires:
+  - authenticated user from `get_current_user` (Bearer JWT required),
+  - `admin` role exists in `roles`,
+  - a `user_roles` row where `user_id=<current_user>` and `role='admin'`.
+- Seeded admin user is configured in `backend/app/seeding/seed_system/users.py`:
+  - email `borja@hellosamples.com`,
+  - password `69476947`,
+  - admin role assignment via `assign_role_to_user(..., role_name="admin")`.
+- Admin payout routes (`/admin/payouts`, `/admin/payouts-ui`, settle/retry endpoints) currently use `Depends(require_admin_user)` in `backend/app/api/routes.py`.
+
+### KNOWN ISSUES (AUTH + ADMIN ACCESS)
+
+- Legacy query-parameter admin bypass is not present anymore:
+  - repository-wide search shows no `admin_key` or `dev-secret` references.
+- `/admin/payouts-ui` now requires Bearer JWT + admin role because it is protected by `Depends(require_admin_user)` and no query-param fallback exists.
+- Direct browser navigation to `/admin/payouts-ui?admin_key=dev-secret` does not supply `Authorization` header, so it fails auth despite query params.
+- UNKNOWN: exact commit/migration where `admin_key` bypass was removed (no remaining code references to trace in current tree).
+
 ## CURRENTLY IMPLEMENTED
+
+### Documentation system behavior
+
+- Documentation system enforces state-linked structure.
+- All docs require explicit link to state files.
+- Inconsistencies between docs and state are tracked in KNOWN ISSUES.
 
 - Studio JSON endpoints are live and power the React `/studio` surfaces:
   - `GET /studio/me`,

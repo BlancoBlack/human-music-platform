@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # Tech debt: Media storage architecture (UUID, CDN, signed URLs)
 
 Object storage, delivery, and identity for master audio and cover art. Local filesystem + readable filenames are correct for MVP debugging; they are not the long-term platform shape.
@@ -58,3 +63,11 @@ Single master WAV on disk / served path; client plays WAV URL (see also [player.
 ---
 
 *File added to capture storage/delivery debt explicitly; complements API and ingestion docs.*
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

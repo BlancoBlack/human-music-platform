@@ -1,3 +1,8 @@
+Type: ECONOMICS
+Status: UNKNOWN
+Linked State: /docs/state/economics.md
+Last Verified: 2026-04-29
+
 # ECONOMIC MODELS — HARD RULES (DO NOT BREAK)
 
 ## ⚠️ CRITICAL: TWO DIFFERENT ECONOMIC MODELS EXIST
@@ -180,3 +185,11 @@ IF YOU TOUCH ECONOMIC LOGIC:
 * which model (USER or GLOBAL)
 
 If not, DO NOT PROCEED.
+
+## Related State
+- /docs/state/economics.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/economics.md

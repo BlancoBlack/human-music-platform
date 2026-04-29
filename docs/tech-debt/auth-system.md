@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/auth.md
+Last Verified: 2026-04-29
+
 # Auth, session, and wallet — tech debt (consolidated)
 
 **Scope:** JWT access + refresh (DB `jti`, **rotation** on `POST /auth/refresh`), httpOnly refresh cookie (`hm_refresh_token`, path `/auth`), Next.js `AuthContext` + Bearer on API calls, **deprecated** optional **`X-User-Id`** for listening (opt-in via `ENABLE_LEGACY_AUTH=true` — default **false**). **Per-user custodial wallets are not implemented**; payouts use **`Artist.payout_wallet_address`**. Wallet-only product/architecture notes stay in [auth-and-wallet.md](./auth-and-wallet.md).
@@ -241,3 +246,11 @@ Validation in **`normalize_registration_email`** (**`/auth/register`** and **`/a
 ---
 
 *Update this file when auth, refresh, cookies, listening identity, or settlement identity rules change. Wallet product deferrals: [auth-and-wallet.md](./auth-and-wallet.md).*
+
+## Related State
+- /docs/state/auth.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/auth.md

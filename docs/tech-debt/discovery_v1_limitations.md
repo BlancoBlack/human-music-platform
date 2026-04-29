@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/discovery.md
+Last Verified: 2026-04-29
+
 # Discovery v1 Limitations
 
 ## 1. Overview
@@ -100,3 +105,11 @@ Current priority is:
 - validating the current discovery system under live usage.
 
 Optimization and adaptivity work should start after sufficient production signal exists to justify complexity.
+
+## Related State
+- /docs/state/discovery.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/discovery.md

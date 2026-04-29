@@ -1,3 +1,8 @@
+Type: SYSTEM
+Status: UNKNOWN
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # Development workflow — HumanSounds
 
 This workflow is **mandatory** for engineering work tracked through Cursor (or any LLM-assisted task). It ties code changes to the **state layer** under `docs/state/`.
@@ -78,3 +83,11 @@ TASK: <your task>
 ```
 
 Replace the bracketed line with the appropriate domain prompt when relevant.
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

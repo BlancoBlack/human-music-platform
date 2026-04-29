@@ -1,3 +1,8 @@
+Type: ARCHITECTURE
+Status: UNKNOWN
+Linked State: /docs/state/backend.md
+Last Verified: 2026-04-29
+
 <!-- model: claude -->
 # Backend Rules
 
@@ -41,3 +46,11 @@ workers → background logic
 - call blockchain from routes
 - mix DB and API logic
 - create large files
+
+## Related State
+- /docs/state/backend.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/backend.md

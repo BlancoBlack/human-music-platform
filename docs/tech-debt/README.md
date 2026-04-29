@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # Tech debt index
 
 ## What this is
@@ -69,3 +74,11 @@ Forward-looking system designs now live in `docs/future/`:
 ---
 
 *Last curated as part of structured tech-debt documentation (MVP → production evolution). Reconciliation pass: manual backlog vs codebase, 2026-04-12 — added economics / infra / product, merged items into existing category files without removing prior entries.*
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

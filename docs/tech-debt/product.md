@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/frontend.md
+Last Verified: 2026-04-29
+
 # Tech debt: Product surface, growth, and differentiation
 
 Business-facing and fan-facing capabilities **explicitly deferred** while core streaming + economics mature. Does not duplicate ingestion/player mechanics—see [ingestion.md](./ingestion.md), [player.md](./player.md), [ux.md](./ux.md).
@@ -141,3 +146,11 @@ Batch job or materialized view; start private/admin-only; document fairness revi
 **Priority:** LOW  
 
 **When to address:** After core analytics trustworthy; before social/recommendation features.
+
+## Related State
+- /docs/state/frontend.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/frontend.md

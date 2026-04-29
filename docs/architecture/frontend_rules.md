@@ -1,3 +1,8 @@
+Type: ARCHITECTURE
+Status: UNKNOWN
+Linked State: /docs/state/frontend.md
+Last Verified: 2026-04-29
+
 <!-- model: claude -->
 # Frontend Rules
 
@@ -38,3 +43,11 @@ button → API call → backend → event → worker → blockchain
 
 - connect directly to blockchain
 - duplicate backend logic
+
+## Related State
+- /docs/state/frontend.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/frontend.md

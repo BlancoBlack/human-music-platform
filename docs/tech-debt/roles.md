@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/auth.md
+Last Verified: 2026-04-29
+
 # Tech debt: Roles, onboarding, and entry flows
 
 This file groups cross-domain technical debt affecting onboarding, roles, and system entry flows.
@@ -62,3 +67,11 @@ Do NOT fragment these issues across multiple tech-debt files.
 - **Operational risk in SQLite dev/prod mismatch**
   - Some auth/locking behavior (e.g., refresh row-lock semantics) differs between SQLite and PostgreSQL.
   - Can hide concurrency issues until production-like environments.
+
+## Related State
+- /docs/state/auth.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/auth.md

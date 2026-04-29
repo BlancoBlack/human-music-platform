@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/streaming.md
+Last Verified: 2026-04-29
+
 # Tech debt: Ingestion
 
 Listening pipeline: `POST /stream/start-session`, `POST /stream/checkpoint`, `POST /stream` (finalize), `ListeningSession`, checkpoints, and `ListeningEvent` as economic source of truth.
@@ -146,3 +151,11 @@ Define onboarding activation metrics and wire stream-tracking outputs to those m
 **Priority:** HIGH  
 
 **When to address:** Before scaling onboarding optimization work.
+
+## Related State
+- /docs/state/streaming.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/streaming.md

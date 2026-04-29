@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # Tech debt: Infrastructure, operations, and quality gates
 
 Runtime topology (DB, workers, queues, secrets), **observability**, and **test depth**. Cross-links: [backend.md](./backend.md) for Postgres ingestion locks and rate limits; [economics.md](./economics.md) for payout audit exports.
@@ -126,3 +131,11 @@ Optional Makefile or `scripts/dev-up.sh`; CI matrix verifies quickstart steps.
 **Priority:** LOW  
 
 **When to address:** When contributor count or CI churn justifies it.
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

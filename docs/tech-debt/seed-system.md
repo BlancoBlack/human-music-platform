@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # Seed System Tech Debt
 
 ## Current Coverage
@@ -31,3 +36,11 @@ The seed system now generates realistic users, one artist per user, multi-releas
 - Network and funding failures are expected in dev environments and are treated as non-blocking.
 - Seed orchestration keeps deterministic data creation (users, artists, catalog, listening, payout_lines) even when settlement attempts fail.
 - Settlement outcomes are logged and recorded as `failed` or `pending/submitted` statuses rather than crashing the seed run.
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/economics.md
+Last Verified: 2026-04-29
+
 # Tech debt: Economics, payouts, and audit trail
 
 Ledger, settlement, policy traceability, and **deferred product/legal** choices that affect money movement. Complements [backend.md](./backend.md) (API/scale) and [ingestion.md](./ingestion.md) (listening pipeline).
@@ -104,3 +109,11 @@ Define and enforce a unified economics contract across onboarding, discovery, cr
 **Priority:** HIGH  
 
 **When to address:** Before expanding payout-critical product behavior.
+
+## Related State
+- /docs/state/economics.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/economics.md

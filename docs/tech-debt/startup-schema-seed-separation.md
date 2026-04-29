@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # Tech debt: Startup / schema / seed separation
 
 **Status:** MOSTLY RESOLVED (historical record retained)  
@@ -97,3 +102,11 @@ Three explicit layers are now adopted.
 - [backend.md](./backend.md) — API and schema evolution context.
 
 *Added: 2026-04-14. Updated: 2026-04-21 to mark resolution and preserve historical context.*
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/streaming.md
+Last Verified: 2026-04-29
+
 # Tech debt: Global audio player
 
 Client: `AudioPlayerProvider`, engaged time via `performance.now()` segments, checkpoints ~30s, finalize on end / track change / stop / unload lifecycle.
@@ -107,3 +112,11 @@ Surface “Tap to play” when `NotAllowedError`; keep session until user confir
 **Priority:** MEDIUM  
 
 **When to address:** **Post-MVP** UX pass.
+
+## Related State
+- /docs/state/streaming.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/streaming.md

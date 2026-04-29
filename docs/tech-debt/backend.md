@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/backend.md
+Last Verified: 2026-04-29
+
 # Tech debt: Backend
 
 API services, SQLite-oriented patterns, and scale assumptions. Economic validation (`validate_listen`, `ListeningEvent`) is intentionally out of scope unless noted.
@@ -477,3 +482,10 @@ Current behavior:
 
 **When to address:** When catalog sizes grow or mobile performance becomes relevant
 
+## Related State
+- /docs/state/backend.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/backend.md

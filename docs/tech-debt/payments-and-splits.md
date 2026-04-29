@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/economics.md
+Last Verified: 2026-04-29
+
 ## Participant Share Mapping
 
 - `participants` payloads intentionally omit royalty share values.
@@ -21,3 +26,11 @@
 
 - This would remove frontend join logic and support multi-role participation more cleanly.
 - Status: `Deferred — post-MVP (requires redesign of approval model)`.
+
+## Related State
+- /docs/state/economics.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/economics.md

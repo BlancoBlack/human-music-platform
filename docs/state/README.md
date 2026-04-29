@@ -20,7 +20,7 @@
 
 ## Maintenance requirement
 
-- **Process:** follow **`/docs/workflow.md`** and **`/prompts/base_task.md`** for every behavior-changing task (state updates are **mandatory** there).
+- **Process:** follow **`/docs/system/workflow.md`** and **`/prompts/base_task.md`** for every behavior-changing task (state updates are **mandatory** there).
 - **Update state docs when behavior changes** in a way users or operators would notice: new routes, auth flows, discovery rules, economics tables, settlement, streaming validation, etc.
 - Small refactors with no behavioral change do not require edits.
 - If implementation is ambiguous from code alone, state docs should say **UNKNOWN** rather than inferring.
@@ -34,3 +34,28 @@
 | [streaming.md](./streaming.md) | `/stream`, sessions, checkpoints, validation, aggregates |
 | [discovery.md](./discovery.md) | `/discovery/home`, pools, scoring, caps, gaps vs “four layers” |
 | [economics.md](./economics.md) | User-centric preview, global pool, ledger V2, settlement |
+
+## KNOWN ISSUES
+
+- [LOW][DOC INCONSISTENCY] /docs/llm/PROMPT_TEMPLATE.md
+
+  Expected (state):
+  Documentation paths should resolve to current docs hierarchy.
+
+  Found (doc):
+  Document references missing path `/docs/workflow.md`.
+
+- [LOW][DOC INCONSISTENCY] /docs/system/LLM_context.md
+
+  Expected (state):
+  Documentation paths should resolve to current docs hierarchy.
+
+  Found (doc):
+  Document references missing path `/docs/workflow.md`.
+
+- [DOC INCONSISTENCY] /docs/llm/PROMPT_TEMPLATE.md contradicts current implementation:
+  - Expected (state): documentation paths must resolve to current /docs hierarchy.
+  - Found (doc): references missing path `/docs/workflow.md`.
+- [DOC INCONSISTENCY] /docs/system/LLM_context.md contradicts current implementation:
+  - Expected (state): documentation paths must resolve to current /docs hierarchy.
+  - Found (doc): references missing path `/docs/workflow.md`.

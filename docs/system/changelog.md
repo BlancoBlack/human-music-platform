@@ -1,3 +1,8 @@
+Type: SYSTEM
+Status: UNKNOWN
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # Changelog
 
 ## Latest Changes (Today)
@@ -55,3 +60,11 @@
 - Broken/high-risk items identified and tracked:
   - overly broad frontend guard can override valid user navigation
   - temporary debug logs in runtime paths (removed in this update)
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

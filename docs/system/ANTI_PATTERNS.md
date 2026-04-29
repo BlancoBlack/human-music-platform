@@ -1,3 +1,8 @@
+Type: SYSTEM
+Status: UNKNOWN
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # ANTI_PATTERNS.md
 
 # 1. PURPOSE
@@ -172,3 +177,11 @@ If any of these appear → STOP and reassess:
 ---
 
 # END OF FILE
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

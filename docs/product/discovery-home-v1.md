@@ -1,3 +1,8 @@
+Type: PRODUCT
+Status: UNKNOWN
+Linked State: /docs/state/discovery.md
+Last Verified: 2026-04-29
+
 # Home Discovery UX (V1)
 
 **Status:** Product specification (V1)  
@@ -280,3 +285,11 @@ This section summarizes what is now implemented in code, to avoid drift between 
 ---
 
 *End of V1 product specification (plus implementation alignment note).*
+
+## Related State
+- /docs/state/discovery.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/discovery.md

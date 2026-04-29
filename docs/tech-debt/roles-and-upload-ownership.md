@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/auth.md
+Last Verified: 2026-04-29
+
 # Roles and upload ownership
 
 **Status:** RBAC permissions are implemented and active on selected routes; ownership enforcement is implemented for artist upload via `can_edit_artist` and owner linkage. Label/roster-style multi-artist authorization is still future work.  
@@ -171,3 +176,11 @@ Roles + ownership are a **cross-cutting** concern: **DB relationships**, **API a
 **Do not** ship "Label can pick artist_id in JSON" without "Label can only pick allowed artists" enforced **on the server** and reflected **in the UI** with a proper selector.
 
 When in doubt, preserve **section 4's invariant** until the full slice is ready.
+
+## Related State
+- /docs/state/auth.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/auth.md

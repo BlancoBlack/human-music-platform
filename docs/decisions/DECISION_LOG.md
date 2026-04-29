@@ -1,3 +1,8 @@
+Type: DECISION
+Status: UNKNOWN
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # DECISION_LOG.md
 
 # 1. PURPOSE
@@ -177,3 +182,11 @@ active
 ---
 
 # END OF FILE
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

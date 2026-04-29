@@ -1,3 +1,8 @@
+Type: ARCHITECTURE
+Status: UNKNOWN
+Linked State: /docs/state/backend.md
+Last Verified: 2026-04-29
+
 <!-- model: claude -->
 # Event System Rules
 
@@ -43,3 +48,11 @@ Replace EventBus with:
 
 - call workers directly from routes
 - execute side effects in services
+
+## Related State
+- /docs/state/backend.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/backend.md

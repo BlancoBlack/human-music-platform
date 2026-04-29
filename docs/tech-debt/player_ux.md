@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/streaming.md
+Last Verified: 2026-04-29
+
 # Tech debt: Advanced player UX (Frontend)
 
 Deferred **presentation and discovery** features for the global audio player. Complements [player.md](./player.md) (timing, unload, ingestion-adjacent behavior) and [ux.md](./ux.md) (broader surfaces).
@@ -63,3 +68,11 @@ The global player is **functionally complete** for MVP: persistent bar across na
 ---
 
 *Split from “player” concerns: this file is polish and discovery; [player.md](./player.md) remains timing, unload, and policy-heavy client behavior.*
+
+## Related State
+- /docs/state/streaming.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/streaming.md

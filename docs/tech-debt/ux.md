@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/frontend.md
+Last Verified: 2026-04-29
+
 # Tech debt: UX
 
 User-visible surfaces adjacent to listening, uploads, and discovery. Does not change API contracts by itself.
@@ -122,3 +127,11 @@ Information architecture pass: landing → discover / library → player; deprec
 **Priority:** LOW  
 
 **When to address:** **Pre-launch** marketing site split or app shell redesign.
+
+## Related State
+- /docs/state/frontend.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/frontend.md

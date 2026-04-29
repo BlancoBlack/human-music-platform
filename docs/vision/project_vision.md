@@ -1,3 +1,8 @@
+Type: VISION
+Status: UNKNOWN
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 # PROJECT_VISION.md
 
 ## 0. What This Is
@@ -633,3 +638,11 @@ A system where:
 # 17. One-Line Pitch
 
 > **“Spotify UX + 4× artist payouts + fan ownership.”**
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md

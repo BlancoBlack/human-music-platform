@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/frontend.md
+Last Verified: 2026-04-29
+
 ## Phase 2 — State management refactor (planned)
 
 Context:
@@ -40,3 +45,11 @@ Deferred (post-MVP stabilization)
 ### Status
 
 Deferred (post-MVP stabilization)
+
+## Related State
+- /docs/state/frontend.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/frontend.md

@@ -1,3 +1,8 @@
+Type: TECH_DEBT
+Status: PARTIALLY_IMPLEMENTED
+Linked State: /docs/state/README.md
+Last Verified: 2026-04-29
+
 > **Tech debt docs:** This file is part of the [tech debt index](./README.md). For priority and backlog placement, see the summary in [backend.md](./backend.md) (“Full-text / trigram search…”).
 
 ---
@@ -32,3 +37,11 @@ Pick based on hosting, ops budget, and whether search is “good enough” SQL o
 - **Concrete triggers:** **P95/P99** search latency or DB CPU rising; **slow query logs** showing repeated full scans on `artists`; autocomplete **rate limits** hit under normal traffic.
 
 Until then, keeping **strict `limit`**, **debounced** clients, and **short max query length** remains the right mitigation.
+
+## Related State
+- /docs/state/README.md
+
+## Alignment
+
+- Vision: Human-centered streaming, user-centric model
+- State: /docs/state/README.md
