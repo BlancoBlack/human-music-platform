@@ -1,5 +1,41 @@
 # Auth — current implementation
 
+## AUDIT SNAPSHOT (2026-04-29) — Roles and Access
+
+## CURRENTLY IMPLEMENTED
+
+- Authentication is JWT-based with refresh rotation and cookie support.
+- Canonical registration role model supports:
+  - `role=user`,
+  - `role=artist` with `sub_role=artist|label`.
+- Studio-sensitive routes are protected by ownership/context dependencies:
+  - `require_artist_owner`,
+  - context validation helpers,
+  - participant checks for release approvals.
+- User-scoped finance/comparison routes use `require_self_or_admin`.
+
+## PARTIALLY IMPLEMENTED
+
+- Frontend enforces authentication broadly, but fine-grained role UX separation (user vs artist vs label) is still partial in route-level behavior.
+- RBAC schema still includes string linkage compatibility paths, increasing long-term drift risk.
+
+## NOT IMPLEMENTED
+
+- Strictly separated frontend dashboard products per role are not fully realized:
+  - `/studio` is the modern creator surface,
+  - no modern React `/dashboard` equivalent for general user role separation.
+
+## KNOWN ISSUES
+
+- Discovery admin analytics exposure risk:
+  - `GET /discovery/admin/analytics` appears to lack explicit backend auth/admin guard in route definition.
+- Mixed legacy and modern surfaces reduce clarity of effective role boundaries.
+
+## ⚠️ SYSTEM INCONSISTENCIES
+
+- Access control is strongest on backend ownership dependencies, while frontend route labels/nav can imply role specialization that is not always strictly enforced client-side.
+- Product routing still mixes legacy role-era pages and studio-context architecture, making role behavior harder to reason about for operators.
+
 ## CURRENTLY IMPLEMENTED
 
 ### JWT access tokens

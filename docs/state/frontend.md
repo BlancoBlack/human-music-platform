@@ -6,6 +6,53 @@
 
 # Frontend — current implementation
 
+## AUDIT SNAPSHOT (2026-04-29) — Studio, Analytics, Payouts, Roles
+
+## CURRENTLY IMPLEMENTED
+
+- `/studio` dashboard (`frontend/app/studio/page.tsx`) is live and data-backed:
+  - loads context via `fetchStudioMe`,
+  - loads dashboard totals via `fetchStudioArtistDashboard`,
+  - loads insight narrative via `fetchArtistInsights`.
+- `/studio/catalog` is live (`frontend/app/studio/catalog/page.tsx`) and uses:
+  - `fetchStudioCatalog`,
+  - `fetchStudioReleases`,
+  - shared tile component `frontend/components/catalog/ReleaseGridTile.tsx`.
+- Studio approvals flow is live:
+  - list: `/studio/pending-approvals`,
+  - detail: `/studio/releases/[id]`,
+  - actions: approve/reject via studio API wrappers in `frontend/lib/api.ts`.
+- Modular UI building blocks exist and are reused:
+  - `StudioLayout`,
+  - `StudioSecondaryNavbar`,
+  - `ReleaseGridTile`,
+  - `StudioApprovalStatusBadge`.
+
+## PARTIALLY IMPLEMENTED
+
+- `/studio` is partially modular:
+  - strong reuse for shell/nav/tiles,
+  - but dashboard page composition is still monolithic in `frontend/app/studio/page.tsx`.
+- Dashboard profile/bio editing on `/studio` is scaffold UI only; displayed bio/image blocks are placeholders.
+
+## NOT IMPLEMENTED
+
+- `/studio/analytics` is a placeholder page (no production chart/metric surface yet).
+- `/studio/payouts` is a placeholder page (no dedicated payouts UI yet).
+- `/studio/release/[id]/edit` is a placeholder page.
+- No new React `/dashboard` route exists in App Router; only `/studio` is the active creator dashboard shell.
+
+## KNOWN ISSUES
+
+- Studio role UX mostly enforces authentication at frontend level; strict authorization relies primarily on backend dependencies.
+- Some creator routes exist outside `/studio` (`/artist-analytics`, `/artist-catalog`, `/artist-upload`) which increases product-surface fragmentation.
+
+## ⚠️ SYSTEM INCONSISTENCIES
+
+- Navigation exposes `/studio/analytics` and `/studio/payouts`, but both are placeholders while `/studio` root already shows real insights/earnings data.
+- Studio dashboard claims editable profile sections in UI, but edit actions are not wired to backend mutation paths.
+- Frontend contains both modern studio creator surfaces and legacy artist pages, with no single canonical creator UX yet.
+
 ## CURRENTLY IMPLEMENTED
 
 - Client auth state is managed by `frontend/context/AuthContext.tsx`.

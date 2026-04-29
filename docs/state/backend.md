@@ -6,6 +6,52 @@
 
 # Backend — current implementation
 
+## AUDIT SNAPSHOT (2026-04-29) — Studio, Analytics, Payouts, Roles
+
+## CURRENTLY IMPLEMENTED
+
+- Studio JSON endpoints are live and power the React `/studio` surfaces:
+  - `GET /studio/me`,
+  - `GET /studio/{artist_id}/dashboard`,
+  - `GET /studio/{artist_id}/catalog`,
+  - `GET /studio/{artist_id}/releases`,
+  - approvals endpoints under `/studio/releases/*`.
+- Legacy HTML dashboards remain active in `backend/app/api/routes.py`:
+  - `/artist-analytics/{artist_id}`,
+  - `/artist-payouts/{artist_id}`,
+  - `/artist-dashboard/{artist_id}`,
+  - `/dashboard/{user_id}`.
+- Artist analytics APIs are implemented in `analytics_service.py` and include:
+  - streams over time,
+  - top songs,
+  - top fans,
+  - narrative insights.
+- Studio/artist dashboard totals are ledger-backed through `get_artist_dashboard()` and payout ledger services.
+- Ownership-gated access is implemented via dependencies:
+  - `require_artist_owner`,
+  - `require_self_or_admin`,
+  - context validators for studio context switching.
+
+## PARTIALLY IMPLEMENTED
+
+- Dual-surface model (legacy HTML + new JSON/studio) is still in operation; duplication risk remains across analytics/payout presentation paths.
+- Frontend role-level UX expectations are ahead of backend route consolidation; enforcement is correct in key finance routes but product paths are not fully unified.
+
+## NOT IMPLEMENTED
+
+- No single consolidated creator backend surface has replaced all legacy dashboard handlers yet.
+- No dedicated backend API specifically for `/studio/analytics` or `/studio/payouts` page contracts (those pages are placeholders in frontend).
+
+## KNOWN ISSUES
+
+- `GET /discovery/admin/analytics` in `backend/app/api/discovery_routes.py` appears exposed without explicit auth/admin dependency checks.
+- Coexistence of legacy and modern dashboard endpoints increases maintenance and behavioral drift risk.
+
+## ⚠️ SYSTEM INCONSISTENCIES
+
+- Current creator product center is `/studio`, but backend still serves legacy dashboard HTML routes with overlapping business outputs.
+- Analytics has both operational metrics APIs and estimated earnings helpers in the same service module, which can blur "insight" vs "economic truth" semantics.
+
 ## CURRENTLY IMPLEMENTED
 
 ### Core architecture

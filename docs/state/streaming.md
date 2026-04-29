@@ -1,5 +1,32 @@
 # Streaming / listening — current implementation
 
+## AUDIT SNAPSHOT (2026-04-29) — Analytics/Payout Data Origin
+
+## CURRENTLY IMPLEMENTED
+
+- Stream ingestion, session start, and checkpoints are active and feed listening events/aggregates.
+- Artist analytics metrics (streams timeline, top songs, top fans, insights) are built from listening/event aggregates and filters.
+- Streaming validity (`is_valid`, thresholds, repeat/daily caps, weights) is enforced before events contribute to economic/analytic aggregates.
+
+## PARTIALLY IMPLEMENTED
+
+- Pipeline outputs support both analytics and economics, but product messaging does not always distinguish:
+  - behavioral stream metrics,
+  - preview economic estimates,
+  - ledger-settled payouts.
+
+## NOT IMPLEMENTED
+
+- No direct settlement side effects in stream ingest path; payout settlement occurs in downstream batch/ledger workflows only.
+
+## KNOWN ISSUES
+
+- In-memory rate limiting and non-unified locking behavior still carry operational risk under scale/multi-process deployment.
+
+## ⚠️ SYSTEM INCONSISTENCIES
+
+- Users can interpret high stream analytics as equivalent to realized payout, but payout truth depends on separate settlement lifecycle states.
+
 ## CURRENTLY IMPLEMENTED
 
 ### Production endpoints (`routes.py`)

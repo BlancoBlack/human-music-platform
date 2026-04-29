@@ -1,5 +1,28 @@
 # Discovery — current implementation
 
+## AUDIT SNAPSHOT (2026-04-29) — Studio/Role/Economics Cross-check
+
+## CURRENTLY IMPLEMENTED
+
+- Discovery serving and telemetry pipeline is active and separate from studio creator dashboard APIs.
+- Discovery quality analytics are computed from telemetry + listening validity joins; this is operationally distinct from payout settlement truth.
+
+## PARTIALLY IMPLEMENTED
+
+- Admin discovery analytics page exists in frontend, but backend protection posture for admin analytics route appears incomplete.
+
+## NOT IMPLEMENTED
+
+- No integrated discovery -> creator payout explanation layer in UI that clarifies which metrics are engagement diagnostics vs settled earnings.
+
+## KNOWN ISSUES
+
+- Discovery admin analytics endpoint guard gap should be resolved to align admin intent with enforced authorization.
+
+## ⚠️ SYSTEM INCONSISTENCIES
+
+- Discovery analytics can be perceived as economic performance signals, but settlement-truth payouts are managed by separate ledger workflows; this separation is technical but not always explicit in product surfaces.
+
 ## CURRENTLY IMPLEMENTED
 
 ### API

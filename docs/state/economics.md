@@ -1,5 +1,45 @@
 # Economics — current implementation
 
+## AUDIT SNAPSHOT (2026-04-29) — Payout Truth, Preview Models, Ledger
+
+## CURRENTLY IMPLEMENTED
+
+- Payout truth in artist/studio dashboards is ledger-based (`payout_lines` + `payout_batches` + `payout_settlements`).
+- "Paid" means settlement-confirmed on-chain (`execution_status='confirmed'`).
+- "Accrued" means finalized/posted ledger value not yet confirmed on-chain.
+- "Pending" means batches still calculating.
+- Snapshot-based V2 payout flow exists end-to-end:
+  - snapshot inputs,
+  - deterministic line generation,
+  - settlement worker execution and status progression.
+- Preview/comparison model still exists and is separate:
+  - `GET /payout/{user_id}` user-centric preview,
+  - `GET /compare/{user_id}` user-centric vs global comparison.
+
+## PARTIALLY IMPLEMENTED
+
+- Product semantics are partially unified:
+  - creator dashboard earnings are ledger-backed,
+  - user payout/compare endpoints are still preview-oriented and can be interpreted as "earnings" by non-technical readers.
+- Some "estimated" analytics helpers are implemented but not consistently surfaced in current studio UI contracts.
+
+## NOT IMPLEMENTED
+
+- No evidence of a fully unified payout API contract that eliminates preview-vs-ledger ambiguity across all UI surfaces.
+- No dedicated React `/studio/payouts` production feature using full ledger history yet (page is placeholder on frontend).
+
+## KNOWN ISSUES
+
+- Currency semantics are inconsistent across paths (preview metadata vs batch defaults).
+- Estimated earnings helpers can be computationally heavy at scale.
+
+## ⚠️ SYSTEM INCONSISTENCIES
+
+- REAL vs ESTIMATED answer:
+  - Studio/artist dashboard payout totals are **REAL ledger-based values** with explicit settled/accrued/pending buckets.
+  - User-centric payout/compare endpoints are **ESTIMATED/PREVIEW model outputs**, not settlement-truth payouts.
+- Mixed economics narratives in the product can mislead if UI labels do not clearly distinguish "settled earnings" from "model preview."
+
 ## CURRENTLY IMPLEMENTED
 
 ### User-centric preview (live aggregates, not ledger)
