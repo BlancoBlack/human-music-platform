@@ -158,6 +158,15 @@
   - indexed columns for queryable dimensions (`event_type`, `created_at`, `request_id`, `song_id`, `user_id`),
   - flexible payload in `metadata_json` for forward-compatible extensions.
 
+### Alembic idempotency fix (CI stability)
+
+- Migrations `0032_discovery_events_table`, `0033_listening_session_discovery_request_id`, and `0034_add_discovery_context_to_listening_sessions` are now idempotent.
+- This is required because `0001_bootstrap` uses `Base.metadata.create_all()`, which can pre-create newer tables/columns on fresh databases before later revisions execute.
+- `0032` now checks table/index existence before create/drop operations; `0033` and `0034` now check column existence before add/drop operations.
+- Prevents duplicate table/column errors in fresh CI DB bootstrap flows (for example: `discovery_events already exists`).
+- No schema redesign, no data migration, and no runtime behavior/API change.
+- Classified as a stability fix, not a feature change.
+
 ### Discovery quality metrics (session-level)
 
 - Discovery-to-listening linkage uses canonical keys: `discovery_events(request_id, song_id)` -> `listening_sessions(discovery_request_id, song_id)` -> `listening_events(session_id)`.

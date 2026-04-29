@@ -19,45 +19,54 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "discovery_events",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("event_type", sa.String(length=64), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
-        sa.Column("request_id", sa.String(length=64), nullable=False),
-        sa.Column("song_id", sa.Integer(), nullable=True),
-        sa.Column("artist_id", sa.Integer(), nullable=True),
-        sa.Column("section", sa.String(length=32), nullable=True),
-        sa.Column("position", sa.Integer(), nullable=True),
-        sa.Column("metadata_json", sa.JSON(), nullable=False),
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    table_names = set(inspector.get_table_names())
+
+    if "discovery_events" not in table_names:
+        op.create_table(
+            "discovery_events",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("event_type", sa.String(length=64), nullable=False),
+            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+            sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
+            sa.Column("request_id", sa.String(length=64), nullable=False),
+            sa.Column("song_id", sa.Integer(), nullable=True),
+            sa.Column("artist_id", sa.Integer(), nullable=True),
+            sa.Column("section", sa.String(length=32), nullable=True),
+            sa.Column("position", sa.Integer(), nullable=True),
+            sa.Column("metadata_json", sa.JSON(), nullable=False),
+        )
+
+    existing_indexes = {idx["name"] for idx in sa.inspect(bind).get_indexes("discovery_events")}
+    index_specs = (
+        ("ix_discovery_events_created_at", ["created_at"]),
+        ("ix_discovery_events_event_type_created_at", ["event_type", "created_at"]),
+        ("ix_discovery_events_request_id", ["request_id"]),
+        ("ix_discovery_events_song_id_created_at", ["song_id", "created_at"]),
+        ("ix_discovery_events_user_id_created_at", ["user_id", "created_at"]),
     )
-    op.create_index("ix_discovery_events_created_at", "discovery_events", ["created_at"], unique=False)
-    op.create_index(
-        "ix_discovery_events_event_type_created_at",
-        "discovery_events",
-        ["event_type", "created_at"],
-        unique=False,
-    )
-    op.create_index("ix_discovery_events_request_id", "discovery_events", ["request_id"], unique=False)
-    op.create_index(
-        "ix_discovery_events_song_id_created_at",
-        "discovery_events",
-        ["song_id", "created_at"],
-        unique=False,
-    )
-    op.create_index(
-        "ix_discovery_events_user_id_created_at",
-        "discovery_events",
-        ["user_id", "created_at"],
-        unique=False,
-    )
+    for index_name, columns in index_specs:
+        if index_name in existing_indexes:
+            continue
+        op.create_index(index_name, "discovery_events", columns, unique=False)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_discovery_events_user_id_created_at", table_name="discovery_events")
-    op.drop_index("ix_discovery_events_song_id_created_at", table_name="discovery_events")
-    op.drop_index("ix_discovery_events_request_id", table_name="discovery_events")
-    op.drop_index("ix_discovery_events_event_type_created_at", table_name="discovery_events")
-    op.drop_index("ix_discovery_events_created_at", table_name="discovery_events")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    table_names = set(inspector.get_table_names())
+    if "discovery_events" not in table_names:
+        return
+
+    existing_indexes = {idx["name"] for idx in inspector.get_indexes("discovery_events")}
+    for index_name in (
+        "ix_discovery_events_user_id_created_at",
+        "ix_discovery_events_song_id_created_at",
+        "ix_discovery_events_request_id",
+        "ix_discovery_events_event_type_created_at",
+        "ix_discovery_events_created_at",
+    ):
+        if index_name in existing_indexes:
+            op.drop_index(index_name, table_name="discovery_events")
     op.drop_table("discovery_events")
