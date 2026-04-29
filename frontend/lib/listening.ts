@@ -7,6 +7,11 @@ const jsonHeaders = {
 } as const;
 
 export type StartSessionResponse = { session_id: number };
+export type DiscoveryPlaybackContext = {
+  request_id: string;
+  section: "play_now" | "for_you" | "explore" | "curated";
+  position: number;
+};
 
 /** Always send `{ song_id: number }`; unwrap accidental `{ song_id: { song_id: n } }` at runtime. */
 function coerceStartSessionSongId(songId: number): number {
@@ -23,12 +28,26 @@ function coerceStartSessionSongId(songId: number): number {
   return n;
 }
 
-export async function postStartSession(songId: number): Promise<StartSessionResponse> {
+export async function postStartSession(
+  songId: number,
+  opts?: { discoveryContext?: DiscoveryPlaybackContext | null },
+): Promise<StartSessionResponse> {
   const song_id = coerceStartSessionSongId(songId);
+  const payload: {
+    song_id: number;
+    discovery_request_id?: string;
+    discovery_section?: DiscoveryPlaybackContext["section"];
+    discovery_position?: number;
+  } = { song_id };
+  if (opts?.discoveryContext?.request_id) {
+    payload.discovery_request_id = opts.discoveryContext.request_id;
+    payload.discovery_section = opts.discoveryContext.section;
+    payload.discovery_position = opts.discoveryContext.position;
+  }
   let res = await apiFetch("/stream/start-session", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ song_id }),
+    body: JSON.stringify(payload),
   });
   if (res.status === 401) {
     // One retry for token-hydration races right after auth bootstrap/login navigation.
@@ -36,7 +55,7 @@ export async function postStartSession(songId: number): Promise<StartSessionResp
     res = await apiFetch("/stream/start-session", {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ song_id }),
+      body: JSON.stringify(payload),
     });
   }
   if (res.status === 401 || res.status === 403) {

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import random
 from datetime import datetime
 
@@ -53,6 +54,8 @@ _MAX_SECTION_EXPLORE = 12
 _MAX_SECTION_CURATED = 8
 _EXPLORE_OFFSET_AFTER_FOR_YOU = 8
 _MIN_EXPLORE_SCORE = 0.3
+_LOW_EXPOSURE_CANDIDATE_MIN_SHARE = 0.30
+_LOW_EXPOSURE_SECTION_MIN_SHARE = 0.25
 
 DISCOVERY_SECTION_MICROCOPY: dict[str, str] = {
     "play_now": "Start here - zero friction",
@@ -187,16 +190,54 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
         },
     )
 
+    popular_set = {int(x) for x in popular}
+    user_set = {int(x) for x in user_pool}
+    low_exposure_set = {int(x) for x in low_exposure}
+
     seen: set[int] = set()
     candidate_ids: list[int] = []
+    low_exposure_min = int(math.ceil(_MAX_CANDIDATES * _LOW_EXPOSURE_CANDIDATE_MIN_SHARE))
+
+    # Reserve a floor of low-exposure candidates before broad merge/fill.
+    for sid in low_exposure:
+        i = int(sid)
+        if i in seen:
+            continue
+        seen.add(i)
+        candidate_ids.append(i)
+        if len(candidate_ids) >= low_exposure_min or len(candidate_ids) >= _MAX_CANDIDATES:
+            break
+
+    candidate_pool_by_song: dict[int, str] = {}
     for sid in (*popular, *user_pool, *low_exposure):
         i = int(sid)
         if i in seen:
             continue
         seen.add(i)
         candidate_ids.append(i)
+        if i in low_exposure_set:
+            candidate_pool_by_song[i] = "low_exposure"
+        elif i in user_set:
+            candidate_pool_by_song[i] = "user"
+        elif i in popular_set:
+            candidate_pool_by_song[i] = "popular"
+        else:
+            candidate_pool_by_song[i] = "unknown"
         if len(candidate_ids) >= _MAX_CANDIDATES:
             break
+
+    # Assign pool labels for the reserved low-exposure prefix as well.
+    for sid in candidate_ids:
+        if sid in candidate_pool_by_song:
+            continue
+        if sid in low_exposure_set:
+            candidate_pool_by_song[sid] = "low_exposure"
+        elif sid in user_set:
+            candidate_pool_by_song[sid] = "user"
+        elif sid in popular_set:
+            candidate_pool_by_song[sid] = "popular"
+        else:
+            candidate_pool_by_song[sid] = "unknown"
 
     popularity = load_global_popularity(db, candidate_ids)
 
@@ -210,11 +251,13 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
 
     return {
         "candidate_ids": candidate_ids,
+        "low_exposure_reservoir": [int(sid) for sid in low_exposure],
         "popularity": popularity,
         "relevance": relevance,
         "artist_by_song": artist_by_song,
         "days_since_release": days_since_release,
         "user_listened_artists": user_listened_artists,
+        "candidate_pool_by_song": candidate_pool_by_song,
     }
 
 
@@ -296,9 +339,18 @@ def score_candidates(
             explore_score = -1.0
 
         if user_id is None:
-            score = for_you_score if candidate_ids else (_WEIGHT_ANON_DISC * disc_i + _WEIGHT_ANON_POP * pop_i)
+            base_score = for_you_score if candidate_ids else (_WEIGHT_ANON_DISC * disc_i + _WEIGHT_ANON_POP * pop_i)
         else:
-            score = for_you_score
+            base_score = for_you_score
+
+        # Derived quality proxy (no new query path): higher when user relevance
+        # keeps pace with global popularity for the same candidate.
+        quality_score = (rel_raw + 1.0) / (pop_raw + 5.0)
+        quality_penalty = max(
+            0.55,
+            min(1.0, 0.4 + (0.6 * quality_score)),
+        )
+        score = float(base_score) * float(quality_penalty)
 
         out.append(
             {
@@ -308,6 +360,9 @@ def score_candidates(
                 "for_you_score": float(for_you_score),
                 "explore_score": float(explore_score),
                 "explore_excluded": bool(explore_excluded),
+                "score_base": float(base_score),
+                "quality_score": float(quality_score),
+                "quality_penalty": float(quality_penalty),
                 "rel": float(rel_i),
                 "pop": float(pop_i),
                 "pop_raw": float(pop_raw),
@@ -415,6 +470,8 @@ def compose_discovery_sections(
     *,
     scored_items: list[dict],
     artist_by_song: dict[int, int],
+    candidate_pool_by_song: dict[int, str] | None = None,
+    low_exposure_reservoir: list[int] | None = None,
     user_id: int | None = None,
     recent_song_ids: set[int] | None = None,
 ) -> dict[str, list[int]]:
@@ -796,6 +853,101 @@ def compose_discovery_sections(
                 artist_counts=ex_artist_counts,
             )
         )
+
+    # FINAL STEP: enforce minimum low-exposure share per section after all caps/filters.
+    pool_map = candidate_pool_by_song or {}
+    low_ranked = [sid for sid in ranked if pool_map.get(int(sid)) == "low_exposure"]
+    reservoir_unique: list[int] = []
+    seen_reservoir: set[int] = set()
+    for sid in (low_exposure_reservoir or []):
+        i = int(sid)
+        if i in seen_reservoir:
+            continue
+        seen_reservoir.add(i)
+        reservoir_unique.append(i)
+
+    used_initial = set(play_now) | set(for_you) | set(explore) | set(curated)
+
+    def _is_dev_env() -> bool:
+        return os.getenv("APP_ENV", "").strip().lower() in {"dev", "development", "local"}
+
+    def _enforce_low_exposure_section(section_name: str, section: list[int]) -> list[int]:
+        if not section:
+            return section
+        target = int(math.ceil(len(section) * _LOW_EXPOSURE_SECTION_MIN_SHARE))
+        before = sum(1 for sid in section if pool_map.get(int(sid)) == "low_exposure")
+        deficit = max(0, target - before)
+        if deficit <= 0:
+            if _is_dev_env():
+                logger.info(
+                    "low_exposure_enforcement",
+                    extra={
+                        "low_exposure_enforcement": {
+                            "section": section_name,
+                            "before": int(before),
+                            "after": int(before),
+                            "target": int(target),
+                        }
+                    },
+                )
+            return section
+
+        # Highest-ranked low-exposure first; fallback to external reservoir for strict guarantee.
+        preferred_ranked = [sid for sid in low_ranked if sid not in used_initial and sid not in section]
+        fallback_ranked_reuse = [sid for sid in low_ranked if sid not in section]
+        preferred_reservoir = [sid for sid in reservoir_unique if sid not in used_initial and sid not in section]
+        fallback_reservoir_reuse = [sid for sid in reservoir_unique if sid not in section]
+        replacement_pool = (
+            preferred_ranked
+            + [sid for sid in fallback_ranked_reuse if sid not in preferred_ranked]
+            + [sid for sid in preferred_reservoir if sid not in preferred_ranked and sid not in fallback_ranked_reuse]
+            + [
+                sid
+                for sid in fallback_reservoir_reuse
+                if sid not in preferred_ranked
+                and sid not in fallback_ranked_reuse
+                and sid not in preferred_reservoir
+            ]
+        )
+        if not replacement_pool:
+            replacement_pool = low_ranked + [sid for sid in reservoir_unique if sid not in low_ranked]
+
+        # Replace lowest-ranked non-low-exposure items (tail) first.
+        replacement_idx = 0
+        added_from_reservoir = 0
+        for idx in range(len(section) - 1, -1, -1):
+            if deficit <= 0 or replacement_idx >= len(replacement_pool):
+                break
+            if pool_map.get(int(section[idx])) == "low_exposure":
+                continue
+            chosen = int(replacement_pool[replacement_idx])
+            if chosen in reservoir_unique and chosen not in low_ranked:
+                added_from_reservoir += 1
+            section[idx] = chosen
+            used_initial.add(chosen)
+            replacement_idx += 1
+            deficit -= 1
+
+        after = sum(1 for sid in section if pool_map.get(int(sid)) == "low_exposure")
+        if _is_dev_env():
+            logger.info(
+                "low_exposure_enforcement",
+                extra={
+                    "low_exposure_enforcement": {
+                        "section": section_name,
+                        "required": int(target),
+                        "before": int(before),
+                        "after": int(after),
+                        "target": int(target),
+                        "added_from_reservoir": int(added_from_reservoir),
+                    }
+                },
+            )
+        return section
+
+    play_now = _enforce_low_exposure_section("play_now", play_now)
+    for_you = _enforce_low_exposure_section("for_you", for_you)
+    explore = _enforce_low_exposure_section("explore", explore)
 
     context_by_song: dict[int, str | None] = {}
     for sid in set(play_now + for_you + explore + curated):

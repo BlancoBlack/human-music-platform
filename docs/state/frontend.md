@@ -1,3 +1,9 @@
+## LAST STABLE CHECKPOINT
+
+- Commit message: feat(discovery): hardened analytics + antifraud + exploration v2 + frontend interaction + state alignment
+- Status: stable
+- Ready for: STATE LOCK
+
 # Frontend — current implementation
 
 ## CURRENTLY IMPLEMENTED
@@ -14,12 +20,24 @@
 - Onboarding routing enforcement is scoped to onboarding-critical paths only: `/`, `/onboarding`, `/user-register-complete`. `useOnboardingRedirect` is disabled for all other routes (including `/discovery`, slug pages, upload routes, and `/player`), eliminating global onboarding redirect side-effects.
 - Onboarding route matching in `OnboardingRouteGuard` uses a Set-based lookup (`ONBOARDING_ROUTES.has(pathname)`) for robust constant-time checks; behavior remains identical to the scoped guard model.
 - Discovery is the primary post-onboarding destination and global fallback route; `frontend/app/discovery/page.tsx` treats `?from=onboarding` for banner copy and “Play now” emphasis without autoplay.
+- Discovery page telemetry wiring (MVP): `GET /discovery/home` provides `request_id`; play attempts from `frontend/app/discovery/page.tsx` emit `POST /discovery/events` (`play_click`) before playback attempt with section/position and auth/allowance flags. Impression telemetry is backend-generated only (frontend does not emit per-track impressions).
+- Discovery-to-listening correlation wiring: discovery play actions now pass additive `discoveryContext` (`request_id`, `section`, `position`) into `useAudioPlayer().playTrack`; the player forwards `discovery_request_id` on `POST /stream/start-session` so listening sessions can be correlated back to discovery requests.
+- Internal discovery admin analytics page exists at `frontend/app/admin/discovery/page.tsx` (`/admin/discovery`): read-only tables for `ctr_by_section`, `ctr_by_position` (chart-ready rows), `candidate_pool_performance`, `candidate_pool_by_section`, `ctr_by_ranking_version`, `top_artists_concentration`, `high_score_low_ctr_anomalies`, plus summary/drift blocks `diversity_per_request` and `score_ctr_correlation`, sourced from backend aggregate endpoint `GET /discovery/admin/analytics`.
+- Discovery admin page contract remains unchanged (read-only tables from backend aggregates); backend now degrades safely to empty blocks when telemetry table is missing so `/admin/discovery` does not hard-crash during DB misalignment windows.
 - **Slug-shaped public pages** (Next.js App Router): `frontend/app/artist/[slug]/page.tsx`, `frontend/app/album/[slug]/page.tsx`, and `frontend/app/track/[slug]/page.tsx` fetch public entity JSON via slug-based API helpers (e.g. `fetchTrackBySlug` in `frontend/lib/api.ts`); when the API returns a canonical slug that differs from the URL segment, pages align the visible route with `router.replace` (backend may also emit **`301`** redirects on the raw HTTP slug endpoints).
 - **Post-login navigation**: `frontend/app/login/page.tsx` uses `router.replace(resolveOnboardingRoute(user) ?? "/discovery")` so users without an enforced onboarding target land on **Discovery**, not `/player`.
 - **Post-register navigation**: `frontend/app/register/page.tsx` uses `router.replace(resolveOnboardingRoute(user) ?? "/onboarding")` to preserve the explicit registration -> onboarding contract.
 - **Player routing model**: `/player` is fully excluded from onboarding-guard scope and is never used as an onboarding/default fallback destination (`frontend/app/player/page.tsx` falls back to `"/discovery"` after explicit play-completion transitions).
 - Single cover upload in `frontend/components/UploadWizard.tsx` uses `POST /releases/{release_id}/upload-cover` when `release_id` is available, with temporary compatibility fallback to `POST /songs/{song_id}/upload-cover` when missing.
 - Album setup default release date in `frontend/components/album/AlbumReleaseSetupForm.tsx` is initialized to current time minus 30 minutes (`new Date(); setMinutes(getMinutes() - 30)`), preserving the existing `datetime-local` ISO formatting pipeline and improving recency consistency with single uploads.
+- Studio catalog release grid (`frontend/app/studio/catalog/page.tsx`) uses **explicit interaction zones** via shared `ReleaseGridTile`: background activate layer (`role="link"`, keyboard Enter/Space) → `router.push` to public album slug route; **play** `<button>` → `useAudioPlayer().playTrack` for the release’s first ready track (no navigation, `stopPropagation`); **edit** `<button>` (studio mode only) → studio edit route (no album navigation). The grid **does not** use a full-tile `<Link>`, so play/edit remain independent controls and interaction parity is preserved between hero and all-releases grids.
+- Studio catalog **All Releases** section (same page, below the track list): loads **`GET /studio/{artist_id}/releases`** via `fetchStudioReleases` in `frontend/lib/api.ts`; renders a denser grid (`grid-cols-3` … `lg:grid-cols-6`, tighter gap) using the same **`ReleaseGridTile`** component with `size="compact"` (smaller title/edit/play chrome; cover `<img loading="lazy">`). Interaction model matches the hero release grid; catalog and track-list sections above are unchanged.
+- Public artist page (`frontend/app/artist/[slug]/page.tsx`) loads **`GET /artist/{slug}/releases`** via `fetchArtistReleasesBySlug`, renders a compact releases grid, and reuses shared `frontend/components/catalog/ReleaseGridTile.tsx` with `mode="public"` (same hover/play/navigation model, edit hidden).
+- Shared release-tile player integration is uniform across studio/public surfaces: release playback always uses the release `first_track` payload (id/title/audio/cover), toggles pause when current track matches, and never triggers route navigation from play actions.
+- Global auth-required modal system is provided by `frontend/context/AuthPromptContext.tsx` (single provider/modal instance mounted via `frontend/components/AppProviders.tsx`); components trigger it through `openAuthModal()` / `closeAuthModal()`.
+- Auth-gated playback is enforced on public release tiles: unauthenticated users clicking play trigger the shared auth modal and **no** playback/navigation; authenticated users play in-place via `useAudioPlayer()`.
+- Public artist page also includes a **Top tracks** section loaded from **`GET /artist/{slug}/tracks?sort=top`** via `fetchArtistTracksBySlug`; rows use catalog-like playback wiring (row click or play button activates track, queue seeded from visible playable rows), use release-owned cover URLs, and never navigate to studio routes.
+- Public top-track playback is auth-gated: unauthenticated play attempts trigger the same shared auth modal and do not start audio; authenticated users play/pause in place through the global player.
 
 ## PARTIALLY IMPLEMENTED
 
@@ -34,6 +52,11 @@
 - `frontend/lib/listening.ts`: uses `apiFetch` for `/stream/start-session`, `/stream/checkpoint`, `/stream` (authenticated path).
 - `frontend/app/onboarding/page.tsx`: uses `submitOnboardingPreferences` from `frontend/lib/api.ts` (apiFetch-backed).
 - `frontend/app/discovery/page.tsx`: uses `fetchDiscoveryHome` from `frontend/lib/api.ts` (apiFetch-backed).
+- `frontend/app/discovery/page.tsx`: also uses `postDiscoveryEvent` from `frontend/lib/api.ts` for `play_click` telemetry.
+- `frontend/app/admin/discovery/page.tsx`: uses `fetchDiscoveryAdminAnalytics` from `frontend/lib/api.ts` (apiFetch-backed).
+- `frontend/app/studio/catalog/page.tsx`: uses `fetchStudioCatalog` and `fetchStudioReleases` from `frontend/lib/api.ts` (apiFetch-backed).
+- `frontend/app/artist/[slug]/page.tsx`: uses `fetchArtistReleasesBySlug` from `frontend/lib/api.ts` (apiFetch-backed).
+- `frontend/app/artist/[slug]/page.tsx`: also uses `fetchArtistTracksBySlug` from `frontend/lib/api.ts` (apiFetch-backed).
 - `frontend/app/register/page.tsx`: uses `AuthContext.register` -> `frontend/lib/auth.ts`.
 - `frontend/app/user-register-complete/page.tsx`: no backend API calls (navigation only).
 

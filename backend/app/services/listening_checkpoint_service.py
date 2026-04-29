@@ -41,6 +41,9 @@ def process_start_listening_session(
     *,
     user_id: int,
     song_id: int,
+    discovery_request_id: str | None = None,
+    discovery_section: str | None = None,
+    discovery_position: int | None = None,
 ) -> Dict[str, Any]:
     """Create a listening session bound to one song (hybrid player)."""
     if (
@@ -53,17 +56,36 @@ def process_start_listening_session(
     if db.query(User.id).filter(User.id == user_id).first() is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    session = ListeningSession(user_id=user_id, song_id=song_id)
+    session = ListeningSession(
+        user_id=user_id,
+        song_id=song_id,
+        discovery_request_id=discovery_request_id,
+        discovery_section=discovery_section,
+        discovery_position=discovery_position,
+    )
     db.add(session)
     logger.info(
         "listening_session_flush_started",
-        extra={"user_id": user_id, "song_id": song_id},
+        extra={
+            "user_id": user_id,
+            "song_id": song_id,
+            "discovery_request_id": discovery_request_id,
+            "discovery_section": discovery_section,
+            "discovery_position": discovery_position,
+        },
     )
     try:
         db.flush()
         logger.info(
             "listening_session_flush_succeeded",
-            extra={"user_id": user_id, "song_id": song_id, "session_id": session.id},
+            extra={
+                "user_id": user_id,
+                "song_id": song_id,
+                "session_id": session.id,
+                "discovery_request_id": discovery_request_id,
+                "discovery_section": discovery_section,
+                "discovery_position": discovery_position,
+            },
         )
 
         # Refresh only after the ORM instance is persistent and has a PK.
@@ -78,12 +100,25 @@ def process_start_listening_session(
         db.rollback()
         logger.exception(
             "listening_session_creation_failed",
-            extra={"user_id": user_id, "song_id": song_id},
+            extra={
+                "user_id": user_id,
+                "song_id": song_id,
+                "discovery_request_id": discovery_request_id,
+                "discovery_section": discovery_section,
+                "discovery_position": discovery_position,
+            },
         )
         raise
     logger.info(
         "listening_session_started",
-        extra={"user_id": user_id, "song_id": song_id, "session_id": session.id},
+        extra={
+            "user_id": user_id,
+            "song_id": song_id,
+            "session_id": session.id,
+            "discovery_request_id": discovery_request_id,
+            "discovery_section": discovery_section,
+            "discovery_position": discovery_position,
+        },
     )
     return {"session_id": session.id}
 

@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAudioPlayer } from "@/components/audio/AudioPlayerProvider";
+import ReleaseGridTile from "@/components/catalog/ReleaseGridTile";
 import { useAuth } from "@/context/AuthContext";
 import {
   API_BASE,
   fetchStudioCatalog,
   fetchStudioMe,
+  fetchStudioReleases,
   type StudioCatalogRelease,
   type StudioCatalogSort,
   type StudioCatalogTrack,
@@ -43,56 +45,9 @@ function ReleaseGrid({ releases }: { releases: StudioCatalogRelease[] }) {
     <section className="mb-10 space-y-4">
       <h2 className="text-lg font-medium text-neutral-900 dark:text-white">Releases</h2>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {releases.slice(0, 5).map((release) => {
-          const cover = release.cover_url ? `${API_BASE}${release.cover_url}` : null;
-          return (
-            <div
-              key={`release-${release.id}`}
-              className="group relative aspect-square overflow-hidden bg-neutral-200 dark:bg-neutral-900"
-            >
-              <Link
-                href={`/album/${release.slug}`}
-                className="absolute inset-0 block"
-                aria-label={`Open ${release.title}`}
-              >
-                {cover ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={cover}
-                    alt={release.title}
-                    className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-xs text-neutral-500 dark:text-neutral-500">
-                    Add cover
-                  </div>
-                )}
-
-                <div className="pointer-events-none absolute inset-0 bg-black/0 transition duration-300 group-hover:bg-black/45" />
-                <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 transition duration-300 group-hover:opacity-100">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white text-black">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                      className="h-6 w-6 pl-0.5"
-                      aria-hidden
-                    >
-                      <path d="M8 5v14l11-7L8 5z" />
-                    </svg>
-                  </div>
-                </div>
-              </Link>
-
-              <Link
-                href={`/studio/release/${release.id}/edit`}
-                className="absolute right-2 top-2 z-10 text-xs text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100"
-              >
-                Edit
-              </Link>
-            </div>
-          );
-        })}
+        {releases.slice(0, 5).map((release) => (
+          <ReleaseGridTile key={`release-${release.id}`} release={release} />
+        ))}
       </div>
     </section>
   );
@@ -210,40 +165,46 @@ function TrackListSection({
   const [error, setError] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(INITIAL_TRACK_COUNT);
 
-
   useEffect(() => {
     if (artistId == null) {
-      setTracks([]);
-      setError(null);
       return;
     }
 
     let cancelled = false;
-    setLoading(true);
-    setError(null);
 
-    void fetchStudioCatalog(artistId, sort)
-      .then((catalog) => {
+    void (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const catalog = await fetchStudioCatalog(artistId, sort);
         if (!cancelled) {
           setTracks(catalog.tracks);
         }
-      })
-      .catch((e) => {
+      } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Failed to load tracks");
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
   }, [artistId, sort]);
 
-  const visibleTracks = useMemo(() => tracks.slice(0, visibleCount), [tracks, visibleCount]);
-  const canLoadMore = visibleCount < tracks.length;
+  const listTracks = useMemo(
+    () => (artistId == null ? [] : tracks),
+    [artistId, tracks],
+  );
+  const visibleTracks = useMemo(
+    () => listTracks.slice(0, visibleCount),
+    [listTracks, visibleCount],
+  );
+  const canLoadMore = visibleCount < listTracks.length;
 
   return (
     <section className="space-y-4">
@@ -274,13 +235,13 @@ function TrackListSection({
         </div>
       </div>
 
-      {error ? (
+      {artistId != null && error ? (
         <p className="text-sm text-red-600 dark:text-red-400" role="alert">
           {error}
         </p>
       ) : null}
 
-      {tracks.length === 0 && !loading ? (
+      {listTracks.length === 0 && !loading ? (
         <p className="text-sm text-neutral-500 dark:text-neutral-400">No tracks available</p>
       ) : null}
 
@@ -306,6 +267,66 @@ function TrackListSection({
               <p className="text-xs text-neutral-500 dark:text-neutral-400">Updating tracks...</p>
             ) : null}
           </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function AllReleasesSection({ artistId }: { artistId: number }) {
+  const [releases, setReleases] = useState<StudioCatalogRelease[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void fetchStudioReleases(artistId)
+      .then((res) => {
+        if (!cancelled) {
+          setReleases(res.releases);
+          setError(null);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load releases");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [artistId]);
+
+  return (
+    <section className="mt-12 space-y-4">
+      <h2 className="text-lg font-medium text-neutral-900 dark:text-white">All Releases</h2>
+
+      {error ? (
+        <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      {loading ? (
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">Loading releases...</p>
+      ) : null}
+
+      {!loading && !error && releases.length === 0 ? (
+        <p className="text-sm text-neutral-500 dark:text-neutral-400">No releases yet</p>
+      ) : null}
+
+      {!loading && releases.length > 0 ? (
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
+          {releases.map((release) => (
+            <ReleaseGridTile key={`all-release-${release.id}`} release={release} size="compact" />
+          ))}
         </div>
       ) : null}
     </section>
@@ -404,6 +425,10 @@ export default function StudioCatalogPage() {
       {!loadingPage && !pageError ? <ReleaseGrid releases={releases} /> : null}
 
       {!loadingPage && !pageError ? <TrackListSection artistId={artistId} /> : null}
+
+      {!loadingPage && !pageError && artistId != null ? (
+        <AllReleasesSection key={artistId} artistId={artistId} />
+      ) : null}
     </main>
   );
 }

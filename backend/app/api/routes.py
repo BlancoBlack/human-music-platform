@@ -23,7 +23,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import case, desc, func
+from sqlalchemy import and_, case, desc, func
 from sqlalchemy.orm import joinedload
 
 from app.api.deps import (
@@ -1109,6 +1109,47 @@ def get_studio_me(
     }
 
 
+def _get_first_tracks_for_releases(db, release_ids: list[int]) -> dict[int, Song]:
+    """First ready song per release (album order), one SQL round-trip via ROW_NUMBER."""
+    if not release_ids:
+        return {}
+    song_rank_subq = (
+        db.query(
+            Song.id.label("song_id"),
+            func.row_number()
+            .over(
+                partition_by=Song.release_id,
+                order_by=(
+                    Song.track_number.is_(None).asc(),
+                    Song.track_number.asc(),
+                    Song.id.asc(),
+                ),
+            )
+            .label("rn"),
+        )
+        .filter(
+            Song.release_id.in_(release_ids),
+            Song.deleted_at.is_(None),
+            Song.upload_status == "ready",
+        )
+        .subquery()
+    )
+    first_songs = (
+        db.query(Song)
+        .join(
+            song_rank_subq,
+            and_(Song.id == song_rank_subq.c.song_id, song_rank_subq.c.rn == 1),
+        )
+        .all()
+    )
+    out: dict[int, Song] = {}
+    for s in first_songs:
+        rid = int(s.release_id) if s.release_id is not None else None
+        if rid is not None:
+            out[rid] = s
+    return out
+
+
 @router.get("/studio/{artist_id}/catalog")
 def get_studio_catalog(
     artist_id: int,
@@ -1158,19 +1199,64 @@ def get_studio_catalog(
             continue
         release_cover_map[rid] = path
 
-    releases_payload = [
-        {
-            "id": int(release.id),
-            "slug": release.slug,
-            "title": release.title,
-            "type": release.type,
-            "release_date": release.release_date.isoformat() if release.release_date else None,
-            "cover_url": public_media_url_from_stored_path(
-                release_cover_map.get(int(release.id))
-            ),
-        }
-        for release in release_rows
-    ]
+    artist = _get_public_artist_or_404(db, int(artist_id))
+
+    first_song_by_release = _get_first_tracks_for_releases(db, release_ids)
+
+    first_song_ids = [int(s.id) for s in first_song_by_release.values()]
+    first_master_map: dict[int, SongMediaAsset] = {}
+    if first_song_ids:
+        for asset in (
+            db.query(SongMediaAsset)
+            .filter(
+                SongMediaAsset.song_id.in_(first_song_ids),
+                SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO,
+            )
+            .all()
+        ):
+            sid = int(asset.song_id)
+            if asset.kind == SONG_MEDIA_KIND_MASTER_AUDIO and sid not in first_master_map:
+                first_master_map[sid] = asset
+
+    releases_payload: list[dict] = []
+    for release in release_rows:
+        rid = int(release.id)
+        rel_cover = public_media_url_from_stored_path(release_cover_map.get(rid))
+        song = first_song_by_release.get(rid)
+        first_track_payload = None
+        if song is not None:
+            sid = int(song.id)
+            master = first_master_map.get(sid)
+            track_cover_url = rel_cover
+            first_track_payload = {
+                "id": sid,
+                "slug": song.slug,
+                "title": song.title,
+                "artist_name": artist.name,
+                "duration_seconds": song.duration_seconds,
+                "release_date": release.release_date.isoformat()
+                if release.release_date
+                else None,
+                "stream_count": 0,
+                "cover_url": track_cover_url,
+                "audio_url": public_media_url_from_stored_path(
+                    master.file_path if master else None
+                ),
+                "playable": bool(master is not None),
+            }
+        releases_payload.append(
+            {
+                "id": rid,
+                "slug": release.slug,
+                "title": release.title,
+                "type": release.type,
+                "release_date": release.release_date.isoformat()
+                if release.release_date
+                else None,
+                "cover_url": rel_cover,
+                "first_track": first_track_payload,
+            }
+        )
 
     stream_counts_subq = (
         db.query(
@@ -1268,8 +1354,6 @@ def get_studio_catalog(
         if asset.kind == SONG_MEDIA_KIND_MASTER_AUDIO and sid not in master_map:
             master_map[sid] = asset
 
-    artist = _get_public_artist_or_404(db, int(artist_id))
-
     tracks_payload = []
     for song, release, stream_count in track_rows:
         sid = int(song.id)
@@ -1277,9 +1361,6 @@ def get_studio_catalog(
         track_cover_url = public_media_url_from_stored_path(
             track_release_cover_map.get(int(release.id))
         )
-        if track_cover_url is None:
-            # Compatibility fallback while legacy song-cover data still exists.
-            track_cover_url = public_media_url_from_stored_path(effective_song_cover(db, song))
         tracks_payload.append(
             {
                 "id": sid,
@@ -1301,6 +1382,114 @@ def get_studio_catalog(
         "releases": releases_payload,
         "tracks": tracks_payload,
     }
+
+
+@router.get("/studio/{artist_id}/releases")
+def get_studio_releases(
+    artist_id: int,
+    _owned_artist: Artist = Depends(require_artist_owner),
+    db=Depends(get_db),
+):
+    """All published releases for studio catalog (full grid); same row shape as catalog `releases`."""
+    release_rows = (
+        db.query(Release)
+        .filter(
+            Release.artist_id == int(artist_id),
+            Release.state == RELEASE_STATE_PUBLISHED,
+        )
+        .order_by(
+            case(
+                (
+                    Release.state == RELEASE_STATE_PUBLISHED,
+                    func.coalesce(Release.discoverable_at, Release.created_at),
+                ),
+                else_=Release.discoverable_at,
+            ).desc()
+        )
+        .all()
+    )
+
+    release_ids = [int(r.id) for r in release_rows]
+    release_cover_map: dict[int, str] = {}
+    if release_ids:
+        for release_id, file_path in (
+            db.query(ReleaseMediaAsset.release_id, ReleaseMediaAsset.file_path)
+            .filter(
+                ReleaseMediaAsset.release_id.in_(release_ids),
+                ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+            )
+            .all()
+        ):
+            rid = int(release_id)
+            if rid in release_cover_map:
+                continue
+            if file_path is None:
+                continue
+            path = str(file_path).strip()
+            if not path:
+                continue
+            release_cover_map[rid] = path
+
+    artist = _get_public_artist_or_404(db, int(artist_id))
+
+    first_song_by_release = _get_first_tracks_for_releases(db, release_ids)
+
+    first_song_ids = [int(s.id) for s in first_song_by_release.values()]
+    first_master_map: dict[int, SongMediaAsset] = {}
+    if first_song_ids:
+        for asset in (
+            db.query(SongMediaAsset)
+            .filter(
+                SongMediaAsset.song_id.in_(first_song_ids),
+                SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO,
+            )
+            .all()
+        ):
+            sid = int(asset.song_id)
+            if asset.kind == SONG_MEDIA_KIND_MASTER_AUDIO and sid not in first_master_map:
+                first_master_map[sid] = asset
+
+    releases_payload: list[dict] = []
+    for release in release_rows:
+        rid = int(release.id)
+        rel_cover = public_media_url_from_stored_path(release_cover_map.get(rid))
+        song = first_song_by_release.get(rid)
+        first_track_payload = None
+        if song is not None:
+            sid = int(song.id)
+            master = first_master_map.get(sid)
+            track_cover_url = rel_cover
+            first_track_payload = {
+                "id": sid,
+                "slug": song.slug,
+                "title": song.title,
+                "artist_name": artist.name,
+                "duration_seconds": song.duration_seconds,
+                "release_date": release.release_date.isoformat()
+                if release.release_date
+                else None,
+                "stream_count": 0,
+                "cover_url": track_cover_url,
+                "audio_url": public_media_url_from_stored_path(
+                    master.file_path if master else None
+                ),
+                "playable": bool(master is not None),
+            }
+        releases_payload.append(
+            {
+                "id": rid,
+                "slug": release.slug,
+                "title": release.title,
+                "type": release.type,
+                "release_date": release.release_date.isoformat()
+                if release.release_date
+                else None,
+                "cover_url": rel_cover,
+                "first_track": first_track_payload,
+            }
+        )
+
+    return {"releases": releases_payload}
 
 
 @router.get(
@@ -1493,6 +1682,9 @@ def post_studio_context(
 
 class StartSessionRequest(BaseModel):
     song_id: int
+    discovery_request_id: str | None = None
+    discovery_section: str | None = None
+    discovery_position: int | None = None
 
 
 class StreamEventRequest(BaseModel):
@@ -2144,6 +2336,275 @@ def get_artist_by_slug(slug: str, db=Depends(get_db)):
     }
 
 
+@router.get("/artist/{slug}/releases")
+def get_artist_releases_by_slug(slug: str, db=Depends(get_db)):
+    artist, is_current = resolve_artist_slug(db, slug)
+    if artist is None or bool(artist.is_system):
+        raise HTTPException(status_code=404, detail="Artist not found")
+    canonical_slug = str(artist.slug or "").strip()
+    if not canonical_slug:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    if not is_current or canonical_slug != slug:
+        return RedirectResponse(
+            url=f"/artist/{quote(canonical_slug)}/releases",
+            status_code=301,
+        )
+
+    release_rows = (
+        db.query(Release)
+        .filter(
+            Release.artist_id == int(artist.id),
+            Release.state == RELEASE_STATE_PUBLISHED,
+        )
+        .order_by(
+            case(
+                (
+                    Release.state == RELEASE_STATE_PUBLISHED,
+                    func.coalesce(Release.discoverable_at, Release.created_at),
+                ),
+                else_=Release.discoverable_at,
+            ).desc()
+        )
+        .all()
+    )
+    release_ids = [int(r.id) for r in release_rows]
+
+    release_cover_map: dict[int, str] = {}
+    if release_ids:
+        for release_id, file_path in (
+            db.query(ReleaseMediaAsset.release_id, ReleaseMediaAsset.file_path)
+            .filter(
+                ReleaseMediaAsset.release_id.in_(release_ids),
+                ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+            )
+            .all()
+        ):
+            rid = int(release_id)
+            if rid in release_cover_map:
+                continue
+            if file_path is None:
+                continue
+            path = str(file_path).strip()
+            if not path:
+                continue
+            release_cover_map[rid] = path
+
+    first_song_by_release = _get_first_tracks_for_releases(db, release_ids)
+    first_song_ids = [int(s.id) for s in first_song_by_release.values()]
+
+    first_master_map: dict[int, SongMediaAsset] = {}
+    if first_song_ids:
+        for asset in (
+            db.query(SongMediaAsset)
+            .filter(
+                SongMediaAsset.song_id.in_(first_song_ids),
+                SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO,
+            )
+            .all()
+        ):
+            sid = int(asset.song_id)
+            if asset.kind == SONG_MEDIA_KIND_MASTER_AUDIO and sid not in first_master_map:
+                first_master_map[sid] = asset
+
+    releases_payload: list[dict] = []
+    for release in release_rows:
+        rid = int(release.id)
+        rel_cover = public_media_url_from_stored_path(release_cover_map.get(rid))
+        song = first_song_by_release.get(rid)
+        first_track_payload = None
+        if song is not None:
+            sid = int(song.id)
+            master = first_master_map.get(sid)
+            first_track_payload = {
+                "id": sid,
+                "slug": song.slug,
+                "title": song.title,
+                "artist_name": artist.name,
+                "duration_seconds": song.duration_seconds,
+                "release_date": release.release_date.isoformat()
+                if release.release_date
+                else None,
+                "stream_count": 0,
+                "cover_url": rel_cover,
+                "audio_url": public_media_url_from_stored_path(
+                    master.file_path if master else None
+                ),
+                "playable": bool(master is not None),
+            }
+        releases_payload.append(
+            {
+                "id": rid,
+                "slug": release.slug,
+                "title": release.title,
+                "type": release.type,
+                "release_date": release.release_date.isoformat()
+                if release.release_date
+                else None,
+                "cover_url": rel_cover,
+                "first_track": first_track_payload,
+            }
+        )
+
+    return {
+        "artist": {
+            "id": int(artist.id),
+            "slug": canonical_slug,
+            "name": artist.name,
+        },
+        "releases": releases_payload,
+    }
+
+
+@router.get("/artist/{slug}/tracks")
+def get_artist_tracks_by_slug(
+    slug: str,
+    sort: Literal["top", "new", "old"] = Query(default="top"),
+    limit: int = Query(default=10, ge=1, le=50),
+    db=Depends(get_db),
+):
+    artist, is_current = resolve_artist_slug(db, slug)
+    if artist is None or bool(artist.is_system):
+        raise HTTPException(status_code=404, detail="Artist not found")
+    canonical_slug = str(artist.slug or "").strip()
+    if not canonical_slug:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    if not is_current or canonical_slug != slug:
+        return RedirectResponse(
+            url=f"/artist/{quote(canonical_slug)}/tracks?{urlencode({'sort': sort, 'limit': int(limit)})}",
+            status_code=301,
+        )
+
+    stream_counts_subq = (
+        db.query(
+            ListeningEvent.song_id.label("song_id"),
+            func.count(ListeningEvent.id).label("stream_count"),
+        )
+        .filter(
+            ListeningEvent.is_valid.is_(True),
+            ListeningEvent.validated_duration > 0,
+        )
+        .group_by(ListeningEvent.song_id)
+        .subquery()
+    )
+
+    track_query = (
+        db.query(
+            Song,
+            Release,
+            func.coalesce(stream_counts_subq.c.stream_count, 0).label("stream_count"),
+        )
+        .join(Release, Release.id == Song.release_id)
+        .outerjoin(stream_counts_subq, stream_counts_subq.c.song_id == Song.id)
+        .filter(
+            Song.artist_id == int(artist.id),
+            Song.deleted_at.is_(None),
+            Song.upload_status == "ready",
+            Release.state == RELEASE_STATE_PUBLISHED,
+        )
+    )
+
+    if sort == "new":
+        track_query = track_query.order_by(
+            Release.release_date.desc().nullslast(),
+            Song.created_at.desc(),
+            Song.id.desc(),
+        )
+    elif sort == "old":
+        track_query = track_query.order_by(
+            Release.release_date.asc().nullslast(),
+            Song.created_at.asc(),
+            Song.id.asc(),
+        )
+    else:
+        track_query = track_query.order_by(
+            func.coalesce(stream_counts_subq.c.stream_count, 0).desc(),
+            Song.created_at.desc(),
+            Song.id.desc(),
+        )
+
+    track_rows = track_query.limit(int(limit)).all()
+    song_ids = [int(row[0].id) for row in track_rows]
+    track_release_ids = sorted(
+        {
+            int(row[1].id)
+            for row in track_rows
+            if getattr(row[1], "id", None) is not None
+        }
+    )
+
+    media_rows = []
+    if song_ids:
+        media_rows = (
+            db.query(SongMediaAsset)
+            .filter(
+                SongMediaAsset.song_id.in_(song_ids),
+                SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO,
+            )
+            .all()
+        )
+
+    track_release_cover_rows = []
+    if track_release_ids:
+        track_release_cover_rows = (
+            db.query(ReleaseMediaAsset.release_id, ReleaseMediaAsset.file_path)
+            .filter(
+                ReleaseMediaAsset.release_id.in_(track_release_ids),
+                ReleaseMediaAsset.asset_type == RELEASE_MEDIA_ASSET_TYPE_COVER_ART,
+            )
+            .all()
+        )
+
+    track_release_cover_map: dict[int, str] = {}
+    for release_id, file_path in track_release_cover_rows:
+        rid = int(release_id)
+        if rid in track_release_cover_map:
+            continue
+        if file_path is None:
+            continue
+        path = str(file_path).strip()
+        if not path:
+            continue
+        track_release_cover_map[rid] = path
+
+    master_map: dict[int, SongMediaAsset] = {}
+    for asset in media_rows:
+        sid = int(asset.song_id)
+        if asset.kind == SONG_MEDIA_KIND_MASTER_AUDIO and sid not in master_map:
+            master_map[sid] = asset
+
+    tracks_payload = []
+    for song, release, stream_count in track_rows:
+        sid = int(song.id)
+        master = master_map.get(sid)
+        track_cover_url = public_media_url_from_stored_path(
+            track_release_cover_map.get(int(release.id))
+        )
+        tracks_payload.append(
+            {
+                "id": sid,
+                "slug": song.slug,
+                "title": song.title,
+                "artist_name": artist.name,
+                "duration_seconds": song.duration_seconds,
+                "release_date": release.release_date.isoformat() if release.release_date else None,
+                "stream_count": int(stream_count or 0),
+                "cover_url": track_cover_url,
+                "audio_url": public_media_url_from_stored_path(master.file_path if master else None),
+                "playable": bool(master is not None),
+            }
+        )
+
+    return {
+        "artist": {
+            "id": int(artist.id),
+            "slug": canonical_slug,
+            "name": artist.name,
+        },
+        "sort": sort,
+        "tracks": tracks_payload,
+    }
+
+
 @router.get("/album/{slug}")
 def get_album_by_slug(slug: str, db=Depends(get_db)):
     release, is_current = resolve_release_slug(db, slug)
@@ -2485,7 +2946,26 @@ def stream_start_session(
 ):
     _enforce_start_session_rate_limit(request, user_id)
     return process_start_listening_session(
-        db, user_id=user_id, song_id=payload.song_id
+        db,
+        user_id=user_id,
+        song_id=payload.song_id,
+        discovery_request_id=(
+            str(payload.discovery_request_id).strip()
+            if payload.discovery_request_id is not None
+            and str(payload.discovery_request_id).strip()
+            else None
+        ),
+        discovery_section=(
+            str(payload.discovery_section).strip()
+            if payload.discovery_section is not None
+            and str(payload.discovery_section).strip()
+            else None
+        ),
+        discovery_position=(
+            int(payload.discovery_position)
+            if payload.discovery_position is not None
+            else None
+        ),
     )
 
 

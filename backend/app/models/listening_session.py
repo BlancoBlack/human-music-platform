@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
 
 from app.core.database import Base
 
@@ -15,4 +15,7 @@ class ListeningSession(Base):
     ended_at = Column(DateTime, nullable=True)
     total_duration = Column(Integer, default=0)
     finalized_at = Column(DateTime, nullable=True)
+    discovery_request_id = Column(String(64), nullable=True)
+    discovery_section = Column(String(32), nullable=True)
+    discovery_position = Column(Integer, nullable=True)
 

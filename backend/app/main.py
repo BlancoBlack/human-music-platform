@@ -23,7 +23,10 @@ from starlette.requests import Request
 from sqlalchemy import inspect, text
 from sqlalchemy.engine.url import make_url
 from app.api.auth_routes import router as auth_router
-from app.api.discovery_routes import router as discovery_router
+from app.api.discovery_routes import (
+    _DISCOVERY_IMPRESSION_SAMPLE_RATE,
+    router as discovery_router,
+)
 from app.api.onboarding_routes import router as onboarding_router
 from app.api.routes import router
 from app.core.database import Base, DB_PATH, SessionLocal, engine
@@ -241,9 +244,25 @@ def _alembic_head_revision() -> str:
 
 
 def _attempt_dev_auto_migration() -> None:
-    if not _is_development_env() or not _env_truthy("ENABLE_AUTO_MIGRATION", "false"):
+    if not _is_development_env():
         return
-    logger.info("development_auto_migration_start", extra={"target": "head"})
+    with engine.connect() as conn:
+        current = _current_alembic_revisions(conn)
+    target = _alembic_head_revision()
+    logger.info(
+        "development_auto_migration_check",
+        extra={"current": current, "target": target},
+    )
+    if len(current) == 1 and current[0] == target:
+        logger.info(
+            "development_auto_migration_skipped",
+            extra={"reason": "already_at_head", "target": target},
+        )
+        return
+    logger.info(
+        "development_auto_migration_start",
+        extra={"current": current, "target": target},
+    )
     try:
         with engine.connect() as conn:
             if is_sqlite(conn):
@@ -258,7 +277,12 @@ def _attempt_dev_auto_migration() -> None:
             "Automatic Alembic migration failed in development environment. "
             "Run: `cd backend && .venv/bin/alembic upgrade head` and retry."
         ) from exc
-    logger.info("development_auto_migration_succeeded", extra={"target": "head"})
+    with engine.connect() as conn:
+        after = _current_alembic_revisions(conn)
+    logger.info(
+        "development_auto_migration_succeeded",
+        extra={"target": target, "current_after": after},
+    )
 
 
 def _current_alembic_revisions(conn) -> list[str]:
@@ -531,6 +555,15 @@ def startup_init() -> None:
         logger.warning(
             "SQLite foreign_keys are OFF at startup — this may indicate a migration issue."
         )
+    logger.info(
+        "discovery_sampling_config",
+        extra={
+            "DISCOVERY_IMPRESSION_SAMPLE_RATE": _DISCOVERY_IMPRESSION_SAMPLE_RATE,
+            "DISCOVERY_IMPRESSION_SAMPLE_RATE_ENV": os.getenv(
+                "DISCOVERY_IMPRESSION_SAMPLE_RATE"
+            ),
+        },
+    )
     if _schema_bootstrap_enabled():
         logger.warning(
             "ALLOW_SCHEMA_BOOTSTRAP is enabled. "

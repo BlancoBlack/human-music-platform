@@ -11,6 +11,7 @@ import {
   type MutableRefObject,
 } from "react";
 import {
+  type DiscoveryPlaybackContext,
   postCheckpoint,
   postFinalizeWithRetry,
   postStartSession,
@@ -28,6 +29,8 @@ export type PlayTrackOptions = {
   queue?: PlayableTrack[];
   /** Index of `track` in `queue`. Defaults to matching `track.id` in `queue`. */
   queueIndex?: number;
+  /** Optional discovery context propagated into start-session linkage. */
+  discoveryContext?: DiscoveryPlaybackContext;
 };
 
 type AudioPlayerContextValue = {
@@ -90,6 +93,7 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
   const engagedMsRef = useRef(0);
   const engageClockStartRef = useRef<number | null>(null);
   const finalizedSessionsRef = useRef<Set<number>>(new Set());
+  const discoveryContextRef = useRef<DiscoveryPlaybackContext | null>(null);
   const queueRef = useRef<PlayableTrack[]>([]);
   const currentIndexRef = useRef(0);
   const playTrackRef = useRef<
@@ -148,6 +152,7 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
       const sec = Math.floor(engagedMsRef.current / 1000);
       sessionIdRef.current = null;
       songIdRef.current = null;
+      discoveryContextRef.current = null;
       nextSequenceRef.current = 0;
       engagedMsRef.current = 0;
 
@@ -224,7 +229,9 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
       engagedMsRef.current = 0;
 
       try {
-        const { session_id } = await postStartSession(expiredGid);
+        const { session_id } = await postStartSession(expiredGid, {
+          discoveryContext: discoveryContextRef.current,
+        });
         sessionIdRef.current = session_id;
         songIdRef.current = expiredGid;
         nextSequenceRef.current = 0;
@@ -294,10 +301,14 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
 
       const songId = track.id;
       let session_id: number;
+      discoveryContextRef.current = opts?.discoveryContext ?? null;
       try {
-        const started = await postStartSession(songId);
+        const started = await postStartSession(songId, {
+          discoveryContext: discoveryContextRef.current,
+        });
         session_id = started.session_id;
       } catch (e) {
+        discoveryContextRef.current = null;
         setCurrentTrack(null);
         setIsBuffering(false);
         console.error("start-session failed", e);
@@ -320,6 +331,7 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
         } catch (secondErr) {
           sessionIdRef.current = null;
           songIdRef.current = null;
+          discoveryContextRef.current = null;
           nextSequenceRef.current = 0;
           engageClockStartRef.current = null;
           engagedMsRef.current = 0;
@@ -364,6 +376,7 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
       const sec = Math.floor(engagedMsRef.current / 1000);
       sessionIdRef.current = null;
       songIdRef.current = null;
+      discoveryContextRef.current = null;
       nextSequenceRef.current = 0;
       engagedMsRef.current = 0;
       if (sid != null && gid != null && sec > 0) {

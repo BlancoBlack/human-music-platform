@@ -99,6 +99,7 @@ from app.models import (
     listening_session,
     listening_session_checkpoint,
     listening_aggregate,
+    discovery_event,
     user_balance,
     artist,
     artist_slug_history,

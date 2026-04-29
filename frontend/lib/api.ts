@@ -268,11 +268,24 @@ export type DiscoveryTrack = {
 };
 
 export type DiscoveryResponse = {
+  request_id: string;
   play_now: DiscoveryTrack[];
   for_you: DiscoveryTrack[];
   explore: DiscoveryTrack[];
   curated: DiscoveryTrack[];
   section_microcopy?: Record<string, string>;
+};
+
+export type DiscoveryPlayEventBody = {
+  event_type: "play_click";
+  request_id: string;
+  song_id: number;
+  section: "play_now" | "for_you" | "explore" | "curated";
+  position: number;
+  auth_state: "authenticated" | "anonymous";
+  allowed_to_play: boolean;
+  blocked_reason: "unauth" | "not_playable" | null;
+  ranking_version?: string;
 };
 
 export type FirstSessionResponse = {
@@ -287,6 +300,18 @@ export async function fetchDiscoveryHome(): Promise<DiscoveryResponse> {
     throw new Error(text || "Failed to load discovery home");
   }
   return res.json();
+}
+
+export async function postDiscoveryEvent(body: DiscoveryPlayEventBody): Promise<void> {
+  const res = await apiFetch("/discovery/events", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to send discovery event");
+  }
 }
 
 export async function submitOnboardingPreferences(payload: {
@@ -312,6 +337,86 @@ export async function fetchFirstSession(): Promise<FirstSessionResponse> {
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || "Failed to load first playback session");
+  }
+  return res.json();
+}
+
+export type DiscoveryCtrRow = {
+  impressions: number;
+  clicks: number;
+  ctr: number;
+};
+
+export type DiscoveryCtrBySectionRow = DiscoveryCtrRow & {
+  section: string;
+};
+
+export type DiscoveryCtrByPositionRow = DiscoveryCtrRow & {
+  global_position: number;
+};
+
+export type DiscoveryCandidatePoolRow = DiscoveryCtrRow & {
+  candidate_pool: string;
+};
+
+export type DiscoveryCandidatePoolBySectionRow = DiscoveryCtrRow & {
+  section: string;
+  candidate_pool: string;
+  share: number;
+};
+
+export type DiscoveryCtrByRankingVersionRow = DiscoveryCtrRow & {
+  ranking_version: string;
+};
+
+export type DiscoveryTopArtistRow = {
+  artist_id: number;
+  impressions: number;
+  share: number;
+};
+
+export type DiscoveryTopArtistsConcentration = {
+  top_artists: DiscoveryTopArtistRow[];
+  top_artists_share: number;
+  total_impressions: number;
+};
+
+export type DiscoveryHighScoreLowCtrRow = {
+  song_id: number;
+  artist_id: number | null;
+  avg_score_play_now: number;
+  impressions: number;
+  clicks: number;
+  ctr: number;
+};
+
+export type DiscoveryDiversityPerRequest = {
+  avg_unique_artists: number;
+  min_unique_artists: number;
+  max_unique_artists: number;
+};
+
+export type DiscoveryScoreCtrCorrelationRow = DiscoveryCtrRow & {
+  bucket: string;
+};
+
+export type DiscoveryAdminAnalyticsResponse = {
+  ctr_by_section: DiscoveryCtrBySectionRow[];
+  ctr_by_position: DiscoveryCtrByPositionRow[];
+  candidate_pool_performance: DiscoveryCandidatePoolRow[];
+  candidate_pool_by_section: DiscoveryCandidatePoolBySectionRow[];
+  ctr_by_ranking_version: DiscoveryCtrByRankingVersionRow[];
+  top_artists_concentration: DiscoveryTopArtistsConcentration;
+  high_score_low_ctr_anomalies: DiscoveryHighScoreLowCtrRow[];
+  diversity_per_request: DiscoveryDiversityPerRequest;
+  score_ctr_correlation: DiscoveryScoreCtrCorrelationRow[];
+};
+
+export async function fetchDiscoveryAdminAnalytics(): Promise<DiscoveryAdminAnalyticsResponse> {
+  const res = await apiFetch("/discovery/admin/analytics");
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to load discovery admin analytics");
   }
   return res.json();
 }
@@ -403,11 +508,54 @@ export type ArtistBySlugResponse = {
   songs: ArtistCatalogSong[];
 };
 
+export type ArtistReleasesBySlugResponse = {
+  artist: {
+    id: number;
+    slug: string;
+    name: string;
+  };
+  releases: StudioCatalogRelease[];
+};
+
+export type ArtistTracksBySlugResponse = {
+  artist: {
+    id: number;
+    slug: string;
+    name: string;
+  };
+  sort: StudioCatalogSort;
+  tracks: StudioCatalogTrack[];
+};
+
 export async function fetchArtistBySlug(slug: string): Promise<ArtistBySlugResponse> {
   const res = await apiFetch(`/artist/${encodeURIComponent(slug)}`);
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Failed to load artist ${slug}`);
+  }
+  return res.json();
+}
+
+export async function fetchArtistReleasesBySlug(
+  slug: string,
+): Promise<ArtistReleasesBySlugResponse> {
+  const res = await apiFetch(`/artist/${encodeURIComponent(slug)}/releases`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to load artist releases for ${slug}`);
+  }
+  return res.json();
+}
+
+export async function fetchArtistTracksBySlug(
+  slug: string,
+  sort: StudioCatalogSort = "top",
+): Promise<ArtistTracksBySlugResponse> {
+  const params = new URLSearchParams({ sort });
+  const res = await apiFetch(`/artist/${encodeURIComponent(slug)}/tracks?${params}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Failed to load artist tracks for ${slug}`);
   }
   return res.json();
 }
@@ -790,15 +938,6 @@ export async function fetchArtistInsights(
 
 export type StudioCatalogSort = "top" | "new" | "old";
 
-export type StudioCatalogRelease = {
-  id: number;
-  slug: string;
-  title: string;
-  type: string;
-  release_date: string | null;
-  cover_url: string | null;
-};
-
 export type StudioCatalogTrack = {
   id: number;
   slug: string;
@@ -812,11 +951,26 @@ export type StudioCatalogTrack = {
   playable: boolean;
 };
 
+export type StudioCatalogRelease = {
+  id: number;
+  slug: string;
+  title: string;
+  type: string;
+  release_date: string | null;
+  cover_url: string | null;
+  /** First ready track on the release (album order); null if none. */
+  first_track?: StudioCatalogTrack | null;
+};
+
 export type StudioCatalogResponse = {
   artist_id: number;
   sort: StudioCatalogSort;
   releases: StudioCatalogRelease[];
   tracks: StudioCatalogTrack[];
+};
+
+export type StudioReleasesResponse = {
+  releases: StudioCatalogRelease[];
 };
 
 export async function fetchStudioCatalog(
@@ -828,6 +982,15 @@ export async function fetchStudioCatalog(
   if (!res.ok) {
     const { detail } = await parseErrorPayload(res);
     throw new Error(detail || `Failed to load catalog for artist ${artistId}`);
+  }
+  return res.json();
+}
+
+export async function fetchStudioReleases(artistId: number): Promise<StudioReleasesResponse> {
+  const res = await apiFetch(`/studio/${artistId}/releases`);
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || `Failed to load releases for artist ${artistId}`);
   }
   return res.json();
 }

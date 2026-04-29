@@ -399,3 +399,81 @@ Add a future dialect-aware hardening migration to enforce `NOT NULL` where safe 
 
 **When to address:** During schema-hardening phase after SQLite compatibility constraints are no longer required.
 
+---
+
+## Public audio exposure via static `/uploads`
+
+**Description**  
+Public endpoints (e.g. `/artist/{slug}/tracks`, `/artist/{slug}/releases`) expose `audio_url` values pointing to static `/uploads/...` paths served via `StaticFiles`.
+
+These URLs are:
+- long-lived
+- unauthenticated
+- directly accessible
+
+UI-level auth gating (play button) does not prevent direct media access.
+
+**Why it matters**  
+- Media can be:
+  - downloaded
+  - scraped
+  - embedded externally
+- No control over:
+  - access
+  - playback
+  - rate
+- Breaks future assumptions about:
+  - user-based playback
+  - monetization
+  - licensing
+
+**Current behavior**  
+- UI:
+  - playback gated via auth modal
+- Backend:
+  - no access control on `/uploads`
+- Result:
+  - media is effectively public
+
+**Future solution**  
+- Signed URLs (short-lived)
+- Authenticated stream proxy endpoint
+- CDN-based token validation
+
+**Priority:** HIGH (for controlled-access model)
+
+**When to address:** Before introducing monetization, licensing constraints, or private content tiers
+
+---
+
+## Release grid image performance (no responsive optimization)
+
+**Description**  
+Release grids (studio + public artist page) render large numbers of cover images using plain `<img>` tags.
+
+Current behavior:
+- `loading="lazy"` only applied in compact mode
+- no responsive sizing (`srcset`)
+- no image optimization pipeline
+
+**Why it matters**  
+- Over-fetching large images on mobile
+- Increased bandwidth usage
+- Slower scrolling on large catalogs (100–200+ releases)
+- Potential layout shifts
+
+**Current behavior**  
+- Full-size images served
+- Browser handles loading heuristics
+- No explicit optimization layer
+
+**Future solution**  
+- Generate image derivatives (thumbnails)
+- Add responsive image support (`srcset`)
+- Optionally migrate to Next.js `<Image>` with proper loader config
+- Ensure consistent lazy loading across all grids
+
+**Priority:** MEDIUM
+
+**When to address:** When catalog sizes grow or mobile performance becomes relevant
+

@@ -7,6 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 import {
   API_BASE,
   fetchDiscoveryHome,
+  postDiscoveryEvent,
   type DiscoveryResponse,
   type DiscoveryTrack,
 } from "@/lib/api";
@@ -14,6 +15,7 @@ import {
 function Section({
   title,
   listKey,
+  requestId,
   tracks,
   emptyMessage,
   microcopy,
@@ -21,7 +23,8 @@ function Section({
   emphasize = false,
 }: {
   title: string;
-  listKey: string;
+  listKey: "play_now" | "for_you" | "explore" | "curated";
+  requestId: string;
   tracks: DiscoveryTrack[];
   emptyMessage: string;
   microcopy?: string;
@@ -64,6 +67,9 @@ function Section({
           <DiscoveryRow
             key={`${listKey}-${track.id}-${index}`}
             track={track}
+            requestId={requestId}
+            section={listKey}
+            position={index}
             isPlayNowLead={listKey === "play_now" && index === 0}
           />
         ))}
@@ -87,9 +93,15 @@ function contextTagClass(tag: string): string {
 
 function DiscoveryRow({
   track,
+  requestId,
+  section,
+  position,
   isPlayNowLead = false,
 }: {
   track: DiscoveryTrack;
+  requestId: string;
+  section: "play_now" | "for_you" | "explore" | "curated";
+  position: number;
   isPlayNowLead?: boolean;
 }) {
   const { authReady, isAuthenticated } = useAuth();
@@ -99,11 +111,33 @@ function DiscoveryRow({
   const coverSrc =
     track.cover_url != null ? `${API_BASE}${track.cover_url}` : null;
   const displayTitle = track.title?.trim() ? track.title : "Untitled";
-  const canPlay = Boolean(track.playable && track.audio_url && authReady && isAuthenticated);
+  const canAttemptPlay = Boolean(track.playable && track.audio_url && authReady);
+  const canPlay = Boolean(canAttemptPlay && isAuthenticated);
   const isCurrent = currentTrack?.id === track.id;
 
+  const emitPlayTelemetry = useCallback(
+    (allowedToPlay: boolean, blockedReason: "unauth" | "not_playable" | null) => {
+      void postDiscoveryEvent({
+        event_type: "play_click",
+        request_id: requestId,
+        song_id: track.id,
+        section,
+        position,
+        auth_state: isAuthenticated ? "authenticated" : "anonymous",
+        allowed_to_play: allowedToPlay,
+        blocked_reason: blockedReason,
+        ranking_version: "v1",
+      }).catch((e) => {
+        console.error("discovery telemetry failed", e);
+      });
+    },
+    [isAuthenticated, position, requestId, section, track.id],
+  );
+
   const handleActivate = useCallback(() => {
-    if (!canPlay || !track.audio_url) return;
+    const blockedReason = !isAuthenticated ? "unauth" : !track.playable || !track.audio_url ? "not_playable" : null;
+    emitPlayTelemetry(canPlay, blockedReason);
+    if (!canAttemptPlay || !canPlay || !track.audio_url) return;
     if (currentTrack?.id === track.id) {
       void togglePlayback();
       return;
@@ -116,36 +150,47 @@ function DiscoveryRow({
         ? { coverUrl: `${API_BASE}${track.cover_url}` }
         : {}),
     };
-    void playTrack(payload, { queue: [payload], queueIndex: 0 }).catch(
+    void playTrack(payload, {
+      queue: [payload],
+      queueIndex: 0,
+      discoveryContext: { request_id: requestId, section, position },
+    }).catch(
       (e) => {
         console.error("discovery play failed", e);
       },
     );
   }, [
+    canAttemptPlay,
     canPlay,
+    requestId,
+    section,
+    position,
     track.audio_url,
+    track.playable,
     track.cover_url,
     track.id,
     displayTitle,
     playTrack,
     currentTrack?.id,
     togglePlayback,
+    emitPlayTelemetry,
+    isAuthenticated,
   ]);
 
   const handlePlayButton = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
-      if (!canPlay) return;
-      if (isCurrent) {
+      if (!canAttemptPlay) return;
+      if (isCurrent && canPlay) {
         void togglePlayback();
         return;
       }
       handleActivate();
     },
-    [canPlay, isCurrent, togglePlayback, handleActivate],
+    [canAttemptPlay, canPlay, isCurrent, togglePlayback, handleActivate],
   );
 
-  const rowClass = canPlay
+  const rowClass = canAttemptPlay
     ? `rounded-xl border border-white/10 bg-white/5 p-3 shadow-sm transition duration-150 hover:border-white/20 hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 dark:focus-visible:ring-neutral-500 ${
         isCurrent
           ? "cursor-pointer ring-2 ring-emerald-500/50 dark:ring-emerald-400/40"
@@ -159,11 +204,11 @@ function DiscoveryRow({
     <li>
       <div
         className={rowClass}
-        role={canPlay ? "button" : undefined}
-        tabIndex={canPlay ? 0 : undefined}
-        onClick={canPlay ? handleActivate : undefined}
+        role={canAttemptPlay ? "button" : undefined}
+        tabIndex={canAttemptPlay ? 0 : undefined}
+        onClick={canAttemptPlay ? handleActivate : undefined}
         onKeyDown={
-          canPlay
+          canAttemptPlay
             ? (e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
@@ -200,14 +245,14 @@ function DiscoveryRow({
                 {track.context_tag}
               </span>
             )}
-            {!canPlay && (
+            {!canAttemptPlay && (
               <p className="mt-2 text-xs font-medium text-neutral-500 dark:text-neutral-500">
                 Not playable
               </p>
             )}
           </div>
           <div className="flex shrink-0 items-center self-center">
-            {canPlay ? (
+            {canAttemptPlay ? (
               <button
                 type="button"
                 className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-full bg-neutral-900 text-white shadow-sm transition hover:scale-105 hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
@@ -344,6 +389,7 @@ export default function DiscoveryPage() {
           <Section
             title="Play now"
             listKey="play_now"
+            requestId={data.request_id}
             tracks={data.play_now}
             variant="play_now"
             emptyMessage="Nothing queued yet"
@@ -353,6 +399,7 @@ export default function DiscoveryPage() {
           <Section
             title="For you"
             listKey="for_you"
+            requestId={data.request_id}
             tracks={data.for_you}
             emptyMessage="We're still learning your taste"
             microcopy={data.section_microcopy?.for_you}
@@ -360,6 +407,7 @@ export default function DiscoveryPage() {
           <Section
             title="Explore"
             listKey="explore"
+            requestId={data.request_id}
             tracks={data.explore}
             emptyMessage="Not enough signal yet — keep listening"
             microcopy={data.section_microcopy?.explore}
@@ -367,6 +415,7 @@ export default function DiscoveryPage() {
           <Section
             title="Curated"
             listKey="curated"
+            requestId={data.request_id}
             tracks={data.curated}
             emptyMessage="Curated picks coming soon"
             microcopy={data.section_microcopy?.curated}
