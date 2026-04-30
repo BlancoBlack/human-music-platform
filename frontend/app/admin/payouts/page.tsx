@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiConflictError,
   fetchAdminActionLogs,
@@ -117,6 +117,12 @@ export default function AdminPayoutsPage() {
   const [retryConfirmText, setRetryConfirmText] = useState("");
   const [retryModalError, setRetryModalError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const latestRequestIdRef = useRef(0);
+  const isMountedRef = useRef(false);
+  const loadRowsRef = useRef<((opts?: { soft?: boolean }) => Promise<void>) | null>(null);
+  const pollingInFlightRef = useRef(false);
+  const pollingCancelledRef = useRef(false);
+  const pollingTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const parsedFilters = useMemo<AdminPayoutFilters>(() => {
     const next: AdminPayoutFilters = {};
@@ -137,28 +143,57 @@ export default function AdminPayoutsPage() {
 
   const loadRows = useCallback(async (opts?: { soft?: boolean }) => {
     const soft = opts?.soft === true;
-    if (!soft) {
+    const requestId = ++latestRequestIdRef.current;
+    if (!soft && isMountedRef.current) {
       setLoading(true);
+      setError(null);
     }
-    setError(null);
     try {
       const [data, logs] = await Promise.all([
         fetchAdminPayouts(parsedFilters),
         fetchAdminActionLogs(50),
       ]);
+      if (!isMountedRef.current || requestId !== latestRequestIdRef.current) {
+        return;
+      }
       setRows(data);
       setActionLogs(logs);
     } catch (e: unknown) {
+      if (!isMountedRef.current || requestId !== latestRequestIdRef.current) {
+        return;
+      }
+      if (soft) {
+        console.warn("[admin/payouts] soft polling refresh failed", e);
+        return;
+      }
       setRows([]);
       setActionLogs([]);
       setError(e instanceof Error ? e.message : "Failed to load admin payouts");
     } finally {
+      if (!isMountedRef.current || requestId !== latestRequestIdRef.current) {
+        return;
+      }
       setLoadedOnce(true);
       if (!soft) {
         setLoading(false);
       }
     }
   }, [parsedFilters]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      pollingCancelledRef.current = true;
+      if (pollingTimeoutRef.current !== undefined) {
+        clearTimeout(pollingTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    loadRowsRef.current = loadRows;
+  }, [loadRows]);
 
   const hasProcessingBatch = useMemo(
     () =>
@@ -167,20 +202,38 @@ export default function AdminPayoutsPage() {
   );
 
   useEffect(() => {
-    if (!hasProcessingBatch) return;
+    pollingCancelledRef.current = !hasProcessingBatch;
+    if (!hasProcessingBatch) {
+      if (pollingTimeoutRef.current !== undefined) {
+        clearTimeout(pollingTimeoutRef.current);
+      }
+      pollingInFlightRef.current = false;
+      return;
+    }
 
     const delays = POLL_DELAYS_MS;
-    let cancelled = false;
     let step = 0;
-    let timeoutId: ReturnType<typeof window.setTimeout>;
+    pollingCancelledRef.current = false;
 
     const schedule = () => {
-      if (cancelled) return;
+      if (pollingCancelledRef.current) return;
       const ms = delays[Math.min(step, delays.length - 1)];
-      timeoutId = window.setTimeout(() => {
-        if (cancelled) return;
-        void loadRows({ soft: true }).finally(() => {
-          if (cancelled) return;
+      pollingTimeoutRef.current = setTimeout(() => {
+        if (pollingCancelledRef.current) return;
+        if (pollingInFlightRef.current) {
+          schedule();
+          return;
+        }
+        pollingInFlightRef.current = true;
+        const loader = loadRowsRef.current;
+        if (!loader) {
+          pollingInFlightRef.current = false;
+          schedule();
+          return;
+        }
+        void loader({ soft: true }).finally(() => {
+          pollingInFlightRef.current = false;
+          if (pollingCancelledRef.current) return;
           step = Math.min(step + 1, delays.length - 1);
           schedule();
         });
@@ -189,10 +242,12 @@ export default function AdminPayoutsPage() {
 
     schedule();
     return () => {
-      cancelled = true;
-      window.clearTimeout(timeoutId);
+      pollingCancelledRef.current = true;
+      if (pollingTimeoutRef.current !== undefined) {
+        clearTimeout(pollingTimeoutRef.current);
+      }
     };
-  }, [hasProcessingBatch, loadRows]);
+  }, [hasProcessingBatch]);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -616,7 +671,7 @@ export default function AdminPayoutsPage() {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
           role="dialog"
           aria-modal="true"
-          onClick={closeSettleModal}
+          onClick={() => closeSettleModal()}
         >
           <div
             className="w-full max-w-lg rounded-lg border border-neutral-200 bg-white p-5 shadow-xl dark:border-neutral-800 dark:bg-neutral-950"
@@ -661,7 +716,7 @@ export default function AdminPayoutsPage() {
             <div className="mt-5 flex items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={closeSettleModal}
+                onClick={() => closeSettleModal()}
                 disabled={settlingBatchId !== null}
                 className="rounded border border-neutral-300 px-3 py-2 text-sm font-medium dark:border-neutral-700"
               >
