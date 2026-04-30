@@ -63,6 +63,14 @@ export class ApiNotFoundError extends Error {
   }
 }
 
+/** HTTP 409 — e.g. payout batch lock held by another admin. */
+export class ApiConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ApiConflictError";
+  }
+}
+
 export async function fetchSong(songId: number): Promise<SongDetail> {
   const res = await apiFetch(`/songs/${songId}`);
   if (res.status === 404) {
@@ -603,19 +611,45 @@ export async function fetchTrackBySlug(slug: string): Promise<TrackBySlugRespons
 export type AdminPayoutRow = {
   id: string;
   batch_id: number;
+  batch_status?: string;
+  distinct_users?: number | null;
   user_id: number | null;
   artist_id: number;
+  artist_name?: string | null;
   amount: number;
+  ui_status?: string;
   status: string;
+  created?: string | null;
   created_at: string | null;
+  attempts?: number | null;
   attempt_count: number | null;
   failure_reason: string | null;
+  tx?: { tx_id: string | null; explorer_url: string | null } | null;
+  wallet?: string | null;
   algorand_tx_id: string | null;
+  tx_id?: string | null;
   destination_wallet: string | null;
 };
 
-export async function fetchAdminPayouts(): Promise<AdminPayoutRow[]> {
-  const res = await apiFetch("/admin/payouts");
+export type AdminPayoutFilters = {
+  status?: string;
+  artist_id?: number;
+  artist_name?: string;
+  limit?: number;
+};
+
+export async function fetchAdminPayouts(
+  filters: AdminPayoutFilters = {},
+): Promise<AdminPayoutRow[]> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (typeof filters.artist_id === "number") {
+    params.set("artist_id", String(filters.artist_id));
+  }
+  if (filters.artist_name) params.set("artist_name", filters.artist_name);
+  if (typeof filters.limit === "number") params.set("limit", String(filters.limit));
+  const query = params.toString();
+  const res = await apiFetch(query ? `/admin/payouts?${query}` : "/admin/payouts");
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || "Failed to load admin payouts");
@@ -623,13 +657,79 @@ export async function fetchAdminPayouts(): Promise<AdminPayoutRow[]> {
   return res.json() as Promise<AdminPayoutRow[]>;
 }
 
-export async function fetchAdminPayoutsUi(): Promise<string> {
-  const res = await apiFetch("/admin/payouts-ui");
+const BATCH_LOCK_CONFLICT =
+  "Batch is currently being processed by another admin";
+
+export async function postAdminSettleBatch(batchId: number): Promise<void> {
+  const res = await apiFetch(`/admin/settle-batch/${batchId}`, {
+    method: "POST",
+  });
+  if (res.status === 409) {
+    const { detail } = await parseErrorPayload(res);
+    throw new ApiConflictError(
+      typeof detail === "string" && detail.trim()
+        ? detail.trim()
+        : BATCH_LOCK_CONFLICT,
+    );
+  }
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(
+      typeof detail === "string" && detail
+        ? detail
+        : `Failed to settle batch ${batchId}`,
+    );
+  }
+}
+
+export type AdminRetryBatchResult = {
+  retried: number;
+  success: number;
+  failed: number;
+};
+
+export async function postAdminRetryBatch(
+  batchId: number,
+): Promise<AdminRetryBatchResult> {
+  const res = await apiFetch(`/admin/retry-batch/${batchId}`, {
+    method: "POST",
+  });
+  if (res.status === 409) {
+    const { detail } = await parseErrorPayload(res);
+    throw new ApiConflictError(
+      typeof detail === "string" && detail.trim()
+        ? detail.trim()
+        : BATCH_LOCK_CONFLICT,
+    );
+  }
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(
+      typeof detail === "string" && detail
+        ? detail
+        : `Failed to retry batch ${batchId}`,
+    );
+  }
+  return res.json() as Promise<AdminRetryBatchResult>;
+}
+
+export type AdminActionLogRow = {
+  admin_user_id: number;
+  admin_user_email: string | null;
+  action_type: string;
+  target_id: number;
+  created_at: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+export async function fetchAdminActionLogs(limit = 50): Promise<AdminActionLogRow[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  const res = await apiFetch(`/admin/action-logs?${params}`);
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || "Failed to load admin payouts UI");
+    throw new Error(text || "Failed to load admin action logs");
   }
-  return res.text();
+  return res.json() as Promise<AdminActionLogRow[]>;
 }
 
 export async function uploadReleaseCover(

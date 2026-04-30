@@ -28,7 +28,8 @@ class PayoutBatch(Base):
             name="ck_payout_batches_period_order",
         ),
         CheckConstraint(
-            "status IN ('draft', 'calculating', 'finalized', 'posted')",
+            "status IN ('draft', 'calculating', 'finalized', 'posted', "
+            "'processing', 'failed', 'paid')",
             name="ck_payout_batches_status",
         ),
         CheckConstraint(

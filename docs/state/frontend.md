@@ -1,5 +1,80 @@
 # Frontend — current implementation
 
+### ADMIN PAYOUTS PAGE
+
+- IMPLEMENTED
+- New frontend admin route `"/admin/payouts"` exists at `frontend/app/admin/payouts/page.tsx`.
+- Page consumes `GET /admin/payouts` via `fetchAdminPayouts(filters)` in `frontend/lib/api.ts`.
+- MVP parity behaviors implemented:
+  - filters: `status`, `artist_id`, `artist_name`, `limit`,
+  - table columns: batch/users/artist/amount/status/wallet/tx/created/attempts/failure/actions,
+  - settle action calling `POST /admin/settle-batch/{batch_id}`,
+  - disabled retry action with Ledger V2 tooltip.
+- Admin nav parity is wired between `"/admin/discovery"` and `"/admin/payouts"` via links in both admin pages.
+
+### ADMIN ROLE GUARD
+
+- IMPLEMENTED
+- `"/admin/payouts"` checks `useAuth().user.roles` client-side and renders `Not authorized` when role `admin` is absent.
+- Backend authorization remains the source-of-truth enforcement (`require_admin_user` on admin endpoints); frontend guard provides UX-layer protection.
+
+### SETTLE SAFETY UX
+
+- IMPLEMENTED (STRONG CONFIRMATION)
+- Settle flow no longer uses `window.confirm`; it uses an explicit modal in `frontend/app/admin/payouts/page.tsx`.
+- Modal requires exact case-sensitive text confirmation (`SETTLE`) in input `id="v9m7yk"` before execution is enabled.
+- Modal displays payout-risk warning plus batch and amount context, prevents double-submit with loading/disabled controls, supports Escape-to-close, and keeps click-outside from ever confirming execution.
+- Failed settle requests render inline modal error with retry path (modal remains open, confirm can be retried).
+- **409** (batch lock): modal closes; the page shows the server `detail` in the main alert (see **UX HARDENING**).
+
+### ADMIN ACTION LOGGING
+
+- IMPLEMENTED
+- Frontend API adds `fetchAdminActionLogs()` in `frontend/lib/api.ts`.
+- `"/admin/payouts"` renders an **Admin Activity** section below the payouts table (see **ADMIN LOGS (ENRICHED)**).
+
+### ADMIN LOGS (ENRICHED)
+
+- IMPLEMENTED
+- Activity table columns: **admin email**, **action**, **batch id**, **result summary** (retry: retried / success / failed from `metadata`; settle: confirmed / failed / skipped when present), **timestamp**.
+- Retry success banner uses a two-line `Retry completed:` message with the same count format.
+
+### DB LOCKING
+
+- IMPLEMENTED (BACKEND)
+- Admin UI continues to disable actions while `batch_status === 'processing'`; server-side locking is described in `docs/state/backend.md` (**DB LOCKING**).
+
+### RETRY SYSTEM
+
+- IMPLEMENTED
+- `"/admin/payouts"` enables Retry when `batch_status === 'failed'` (ledger batch must be in failed state, not only a failed-looking row).
+- Retry flow uses a dedicated confirmation modal requiring exact input `RETRY` before execution.
+- Frontend calls `POST /admin/retry-batch/{batch_id}` through `postAdminRetryBatch(...)`, refetches payouts/activity on success, and shows success/error feedback.
+
+### PROCESSING LOCK
+
+- IMPLEMENTED
+- Table status shows a **PROCESSING** label when `batch_status === 'processing'`, with a small inline spinner in the status cell.
+- **Settle** and **Retry** are disabled while the batch is processing (server also enforces the lock).
+- While any loaded row has `batch_status === 'processing'`, the page soft-refetches payouts and activity on a **backoff** schedule (**4s → 6s → 10s** max); the interval resets when no row is processing; the timer is cleared on unmount.
+
+### UX HARDENING
+
+- IMPLEMENTED
+- `postAdminSettleBatch` / `postAdminRetryBatch` throw `ApiConflictError` on **409** with the API `detail` (default: batch processed by another admin); handlers close the modal and surface the message in the main alert (not raw JSON).
+- Polling backoff and processing spinner are documented under **PROCESSING LOCK**.
+- Broader multi-admin collaboration gaps: `docs/tech-debt/admin.md` (**MULTI-ADMIN COLLABORATION (FUTURE)**).
+
+### RETRY RESULT SUMMARY
+
+- IMPLEMENTED
+- `postAdminRetryBatch(...)` parses the JSON body `{ retried, success, failed }` and surfaces counts in the success banner (`Retry completed:` + `N retried / …`).
+
+### ADMIN PAYOUTS UI
+
+- LEGACY REMOVED
+- Frontend no longer depends on `"/admin/payouts-ui"` and uses API-driven admin payouts + activity surfaces.
+
 ## CURRENTLY IMPLEMENTED
 
 ### App Structure

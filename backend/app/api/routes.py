@@ -71,11 +71,12 @@ from app.models.song_media_asset import (
     SONG_MEDIA_KIND_MASTER_AUDIO,
     SongMediaAsset,
 )
+from app.models.admin_action_log import AdminActionLog
 from app.models.user import User
 from app.services.media_urls import public_media_url_from_stored_path
+from app.services.payout_batch_lock import BatchLockContentionError
 from app.services.payout_service import calculate_user_distribution
 from app.services.payout_ledger_ui_service import (
-    admin_ledger_group_counts,
     artist_batch_history,
     artist_ledger_bucket_cents,
     fetch_admin_ledger_groups,
@@ -126,7 +127,10 @@ from app.services.slug_service import (
 )
 from app.services.search_service import search_global
 from app.services.song_split_validation import SplitValidationError
-from app.workers.settlement_worker import process_batch_settlement
+from app.workers.settlement_worker import (
+    process_batch_settlement,
+    retry_failed_settlements_for_batch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3684,37 +3688,71 @@ def post_artist_payout_method(
 def get_admin_payouts(
     status: Optional[str] = Query(None, description="Filter by payout status"),
     artist_id: Optional[int] = Query(None, description="Filter by artist id"),
+    artist_name: Optional[str] = Query(None, description="Filter by artist name"),
     limit: int = Query(50, ge=1, le=500, description="Max rows to return"),
     _admin_user: User = Depends(require_admin_user),
 ):
+    name_artist_ids = None
     db = SessionLocal()
     try:
-        groups = fetch_admin_ledger_groups(
-            db,
-            status=status,
-            artist_id=artist_id,
-            artist_ids_from_name=None,
-            limit=limit,
-        )
+        if artist_name and artist_name.strip():
+            cleaned_name = artist_name.strip()
+            matching_artists = (
+                db.query(Artist.id)
+                .filter(
+                    func.lower(Artist.name).like(f"%{cleaned_name.lower()}%"),
+                )
+                .all()
+            )
+            name_artist_ids = [int(a.id) for a in matching_artists]
+        if name_artist_ids is not None and len(name_artist_ids) == 0:
+            groups = []
+        else:
+            groups = fetch_admin_ledger_groups(
+                db,
+                status=status,
+                artist_id=artist_id,
+                artist_ids_from_name=name_artist_ids,
+                limit=limit,
+            )
     finally:
         db.close()
 
     out = []
     for g in groups:
         created = g.created_at or g.period_end_at
+        tx_id = (
+            str(g.algorand_tx_id).strip()
+            if g.algorand_tx_id and str(g.algorand_tx_id).strip()
+            else None
+        )
         out.append(
             {
                 "id": synthetic_ledger_group_id(g.batch_id, g.artist_id),
                 "batch_id": g.batch_id,
+                "batch_status": g.batch_status,
+                "distinct_users": g.distinct_users,
                 "user_id": None,
                 "artist_id": g.artist_id,
+                "artist_name": g.artist_name,
                 "amount": round(float(g.amount_cents) / 100.0, 2),
+                "ui_status": g.ui_status,
                 "status": g.ui_status,
+                "wallet": g.destination_wallet,
+                "destination_wallet": g.destination_wallet,
+                "tx": {
+                    "tx_id": tx_id,
+                    "explorer_url": (
+                        f"{EXPLORER_BASE_URL}/transaction/{quote(tx_id)}" if tx_id else None
+                    ),
+                },
+                "created": created.isoformat() if created is not None else None,
                 "created_at": created.isoformat() if created is not None else None,
+                "attempts": g.attempt_count,
                 "attempt_count": g.attempt_count,
                 "failure_reason": g.failure_reason,
-                "algorand_tx_id": g.algorand_tx_id,
-                "destination_wallet": g.destination_wallet,
+                "algorand_tx_id": tx_id,
+                "tx_id": tx_id,
             }
         )
     return out
@@ -3728,9 +3766,43 @@ def post_admin_settle_batch(
 ):
     """Run V2 on-chain settlement for all artists in a finalized/posted batch."""
     try:
-        return process_batch_settlement(batch_id)
+        return process_batch_settlement(batch_id, admin_user_id=int(_admin_user.id))
+    except BatchLockContentionError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=str(e) or "Batch is currently being processed by another admin",
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/admin/action-logs")
+def get_admin_action_logs(
+    limit: int = Query(50, ge=1, le=500, description="Max logs to return"),
+    _admin_user: User = Depends(require_admin_user),
+):
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(AdminActionLog, User.email)
+            .outerjoin(User, User.id == AdminActionLog.admin_user_id)
+            .order_by(AdminActionLog.created_at.desc(), AdminActionLog.id.desc())
+            .limit(int(limit))
+            .all()
+        )
+    finally:
+        db.close()
+    return [
+        {
+            "admin_user_id": int(log.admin_user_id),
+            "admin_user_email": str(email).strip() if email else None,
+            "action_type": str(log.action_type),
+            "target_id": int(log.target_id),
+            "created_at": log.created_at.isoformat() if log.created_at is not None else None,
+            "metadata": log.metadata_json,
+        }
+        for log, email in rows
+    ]
 
 
 @router.post("/admin/retry-payout/{payout_id}")
@@ -3752,296 +3824,26 @@ def post_admin_retry_payout(
     )
 
 
-@router.get("/admin/payouts-ui", response_class=HTMLResponse)
-def admin_payouts_ui(
-    status: Optional[str] = Query(None, description="Filter by payout status"),
-    artist_id: Optional[str] = Query(None, description="Filter by artist id"),
-    artist_name: Optional[str] = Query(None, description="Filter by artist name"),
-    limit: int = Query(50, ge=1, le=500, description="Max rows in table"),
-    msg: Optional[str] = Query(None),
+@router.post("/admin/retry-batch/{batch_id}")
+def post_admin_retry_batch(
+    batch_id: int,
     _admin_user: User = Depends(require_admin_user),
+    _reject_impersonation: None = Depends(require_non_impersonation),
 ):
-    artist_id_int = None
-    if artist_id:
-        try:
-            artist_id_int = int(artist_id)
-        except ValueError:
-            artist_id_int = None
-
-    db = SessionLocal()
+    """Retry only failed payout settlements in one batch."""
     try:
-        (
-            total_count,
-            pending_count,
-            processing_count,
-            accrued_count,
-            paid_count,
-            failed_count,
-        ) = admin_ledger_group_counts(db)
-
-        name_artist_ids = None
-        if artist_name and artist_name.strip():
-            cleaned_name = artist_name.strip()
-            matching_artists = (
-                db.query(Artist.id)
-                .filter(
-                    func.lower(Artist.name).like(f"%{cleaned_name.lower()}%"),
-                )
-                .all()
-            )
-            name_artist_ids = [int(a.id) for a in matching_artists]
-
-        if name_artist_ids is not None and len(name_artist_ids) == 0:
-            payouts = []
-        else:
-            payouts = fetch_admin_ledger_groups(
-                db,
-                status=status,
-                artist_id=artist_id_int,
-                artist_ids_from_name=name_artist_ids,
-                limit=limit,
-            )
-    finally:
-        db.close()
-
-    rows_html = ""
-    for g in payouts:
-        pid = str(g.batch_id)
-        uid = str(g.distinct_users) if g.distinct_users else "—"
-        if g.artist_name:
-            aid = f"{_html_escape(g.artist_name)} (ID: {g.artist_id})"
-        else:
-            aid = str(g.artist_id)
-        amt = round(float(g.amount_cents) / 100.0, 2)
-        ui_st = g.ui_status
-        low_status = ui_st.lower()
-        if low_status in ("paid", "pending", "failed", "processing", "accrued"):
-            st = (
-                f'<span class="badge badge-{low_status}">'
-                f"{_html_escape(low_status.upper())}</span>"
-            )
-        else:
-            st = _html_escape(ui_st)
-        ac = g.attempt_count or "0"
-        fr = g.failure_reason or "—"
-        if g.destination_wallet and str(g.destination_wallet).strip():
-            full_wallet = str(g.destination_wallet).strip()
-            if len(full_wallet) > 12:
-                short_wallet = full_wallet[:6] + "..." + full_wallet[-4:]
-            else:
-                short_wallet = full_wallet
-            js_wallet = json.dumps(full_wallet)
-            short_esc = _html_escape(short_wallet)
-            dw = (
-                f'<span onclick=\'copyText({js_wallet})\' '
-                f'style="cursor:pointer;" title="Click to copy">'
-                f"{short_esc}</span>"
-            )
-        else:
-            dw = "—"
-        if g.algorand_tx_id and str(g.algorand_tx_id).strip():
-            raw_tx = str(g.algorand_tx_id).strip()
-            short_tx = (
-                f"{raw_tx[:4]}...{raw_tx[-4:]}" if len(raw_tx) > 12 else raw_tx
-            )
-            tx_href = _html_escape(raw_tx)
-            tx_label = _html_escape(short_tx)
-            tx = (
-                f'<a href="{EXPLORER_BASE_URL}/transaction/{tx_href}" '
-                f'target="_blank">{tx_label}</a>'
-            )
-        else:
-            tx = "—"
-        created_dt = g.created_at or g.period_end_at
-        if created_dt is not None:
-            created = _html_escape(created_dt.isoformat())
-        else:
-            created = "—"
-        tr_attrs = ""
-        retry_cell = "—"
-        rows_html += f"""
-            <tr{tr_attrs}>
-                <td style="padding:10px; border-bottom:1px solid #eee; width:60px;">{pid}</td>
-                <td style="padding:10px; border-bottom:1px solid #eee; width:60px;">{uid}</td>
-                <td style="padding:10px; border-bottom:1px solid #eee; width:240px;">{aid}</td>
-                <td style="padding:10px; border-bottom:1px solid #eee; width:80px;">{amt}</td>
-                <td style="padding:10px; border-bottom:1px solid #eee; width:100px;">{st}</td>
-                <td class="truncate" style="padding:10px; border-bottom:1px solid #eee; max-width:160px;">{dw}</td>
-                <td class="truncate" style="padding:10px; border-bottom:1px solid #eee; max-width:160px;">{tx}</td>
-                <td style="padding:10px; border-bottom:1px solid #eee; width:180px;">{created}</td>
-                <td style="padding:10px; border-bottom:1px solid #eee; width:80px;">{ac}</td>
-                <td class="truncate" style="padding:10px; border-bottom:1px solid #eee; max-width:140px;">{fr}</td>
-                <td style="padding:10px; border-bottom:1px solid #eee; width:100px;">{retry_cell}</td>
-            </tr>
-        """
-
-    if not payouts:
-        rows_html = """
-            <tr>
-                <td colspan="11" style="padding:16px; color:#666;">No payouts match the current filters.</td>
-            </tr>
-        """
-
-    artist_val = artist_id or ""
-    artist_name_val = artist_name or ""
-    sel_all = "selected" if not status else ""
-    sel_pending = "selected" if status == "pending" else ""
-    sel_processing = "selected" if status == "processing" else ""
-    sel_paid = "selected" if status == "paid" else ""
-    sel_accrued = "selected" if status == "accrued" else ""
-    sel_failed = "selected" if status == "failed" else ""
-
-    # Flash-style messages: URL-only (no session); omit msg from links → no banner.
-    messages = {
-        "retry_ok": ("Retry triggered successfully", "#e6f9ec", "#1e7e34", "#28a745"),
-        "payout_sent": ("Payout sent successfully", "#e6f0ff", "#0d6efd", "#0d6efd"),
-        "error_wallet": ("Missing or invalid destination wallet", "#fdecea", "#842029", "#dc3545"),
-        "batch_started": ("Batch processing started", "#fff3cd", "#664d03", "#ffc107"),
-    }
-    msg_block = ""
-    if msg and msg in messages:
-        text, bg, tc, bc = messages[msg]
-        text_esc = _html_escape(text)
-        msg_block = f"""
-        <div style="
-            margin-bottom:20px;
-            padding:12px;
-            border:1px solid {bc};
-            background:{bg};
-            color:{tc};
-            border-radius:8px;
-        ">
-            {text_esc}
-        </div>
-        """
-    elif msg is not None:
-        logger.warning(f"Unknown msg param: {msg}")
-
-    html = f"""
-    <html>
-    <head>
-    <style>
-    .truncate {{
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }}
-    .badge {{
-        padding: 4px 8px;
-        border-radius: 8px;
-        font-size: 0.8rem;
-        font-weight: 600;
-        display: inline-block;
-    }}
-    .badge-paid {{
-        background: #d4edda;
-        color: #155724;
-    }}
-    .badge-pending {{
-        background: #fff3cd;
-        color: #856404;
-    }}
-    .badge-failed {{
-        background: #f8d7da;
-        color: #721c24;
-    }}
-    .badge-processing {{
-        background: #d1ecf1;
-        color: #0c5460;
-    }}
-    .badge-accrued {{
-        background: #e7e3fc;
-        color: #3d2f7a;
-    }}
-    </style>
-    </head>
-    <body style="font-family: Arial; padding: 40px; max-width: 1200px;">
-        <h1 style="margin-top:0;">Admin — Payouts</h1>
-{msg_block}
-        <section style="margin-bottom:24px; padding:20px; border:1px solid #6c757d44; border-radius:12px;">
-            <h2 style="margin-top:0;">Summary (all payouts)</h2>
-            <p style="margin:0 0 12px 0; color:#555; font-size:0.95rem;">
-                Counts are V2 ledger groups (one row per payout batch + artist), summed from
-                <code>payout_lines</code>. The table respects filters and limit.
-            </p>
-            <p style="margin:0; line-height:1.8;">
-                <b>Total</b> {total_count}
-                &nbsp;|&nbsp; <b>Pending</b> {pending_count}
-                &nbsp;|&nbsp; <b>Processing</b> {processing_count}
-                &nbsp;|&nbsp; <b>Accrued</b> {accrued_count}
-                &nbsp;|&nbsp; <b>Paid (on-chain)</b> {paid_count}
-                &nbsp;|&nbsp; <b>Failed</b> {failed_count}
-            </p>
-        </section>
-
-        <section style="margin-bottom:24px; padding:20px; border:1px solid #ffc10755; border-radius:12px; background:#fffdf5;">
-            <h2 style="margin-top:0;">Filters</h2>
-            <form method="get" action="/admin/payouts-ui" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end;">
-                <p style="margin:0;">
-                    <label for="f_status"><b>Status</b></label><br/>
-                    <select name="status" id="f_status" style="margin-top:6px; min-width:160px;">
-                        <option value="" {sel_all}>All</option>
-                        <option value="pending" {sel_pending}>pending</option>
-                        <option value="processing" {sel_processing}>processing</option>
-                        <option value="accrued" {sel_accrued}>accrued</option>
-                        <option value="paid" {sel_paid}>paid (on-chain)</option>
-                        <option value="failed" {sel_failed}>failed</option>
-                    </select>
-                </p>
-                <p style="margin:0;">
-                    <label for="f_artist"><b>Artist ID</b></label><br/>
-                    <input type="number" name="artist_id" id="f_artist" value="{_html_escape(artist_val)}" min="1" step="1" style="margin-top:6px; width:120px;" />
-                </p>
-                <p style="margin:0;">
-                    <label for="f_artist_name"><b>Artist name</b></label><br/>
-                    <input type="text" name="artist_name" id="f_artist_name" value="{_html_escape(artist_name_val)}" placeholder="Artist name" style="margin-top:6px; min-width:180px;" />
-                </p>
-                <p style="margin:0;">
-                    <label for="f_limit"><b>Limit</b></label><br/>
-                    <input type="number" name="limit" id="f_limit" value="{limit}" min="1" max="500" step="1" style="margin-top:6px; width:100px;" />
-                </p>
-                <p style="margin:0;">
-                    <button type="submit">Apply filters</button>
-                </p>
-            </form>
-        </section>
-
-        <section style="margin-bottom:32px; padding:20px; border:1px solid #0d6efd33; border-radius:12px; background:#f8fbff;">
-            <h2 style="margin-top:0;">Payouts</h2>
-            <p style="color:#444; margin-bottom:12px;">
-                Ordered by batch period end (newest first). Each row aggregates all lines for one
-                batch + artist. &quot;User&quot; = distinct paying users in that group. Showing up to {limit} rows.
-            </p>
-            <div style="overflow-x:auto;">
-            <table style="width:100%; table-layout:fixed; border-collapse:collapse; margin-top:8px; font-size:0.9rem;">
-                <thead>
-                    <tr style="text-align:left; border-bottom:2px solid #ccc;">
-                        <th style="padding:10px; width:60px;">Batch</th>
-                        <th style="padding:10px; width:60px;">Users</th>
-                        <th style="padding:10px; width:240px;">Artist</th>
-                        <th style="padding:10px; width:80px;">Amount</th>
-                        <th style="padding:10px; width:100px;">Status</th>
-                        <th style="padding:10px; width:160px;">Wallet</th>
-                        <th style="padding:10px; width:160px;">Tx</th>
-                        <th style="padding:10px; width:180px;">Created</th>
-                        <th style="padding:10px; width:80px;">Attempts</th>
-                        <th style="padding:10px; width:140px;">Failure</th>
-                        <th style="padding:10px; width:100px;">Actions</th>
-                    </tr>
-                </thead>
-                <tbody>{rows_html}</tbody>
-            </table>
-            </div>
-        </section>
-    <script>
-    function copyText(text) {{
-        navigator.clipboard.writeText(text);
-    }}
-    </script>
-    </body></html>
-    """
-
-    return html
+        return retry_failed_settlements_for_batch(
+            batch_id, admin_user_id=int(_admin_user.id)
+        )
+    except BatchLockContentionError as e:
+        raise HTTPException(
+            status_code=409,
+            detail=str(e) or "Batch is currently being processed by another admin",
+        )
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/artist-payouts/{artist_id}", response_class=HTMLResponse)

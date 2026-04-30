@@ -119,6 +119,7 @@ from app.models import (
     snapshot_listening_input,
     payout_settlement,
     song_slug_history,
+    admin_action_log,
 )
 
 # Register model-level slug listeners for all insert paths.

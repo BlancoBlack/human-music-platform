@@ -34,15 +34,90 @@
   - email `borja@hellosamples.com`,
   - password `69476947`,
   - admin role assignment via `assign_role_to_user(..., role_name="admin")`.
-- Admin payout routes (`/admin/payouts`, `/admin/payouts-ui`, settle/retry endpoints) currently use `Depends(require_admin_user)` in `backend/app/api/routes.py`.
+- Admin payout routes (`/admin/payouts`, settle/retry endpoints, action-log endpoint) use `Depends(require_admin_user)` in `backend/app/api/routes.py`.
 
-### KNOWN ISSUES (AUTH + ADMIN ACCESS)
+### ADMIN PAYOUTS API
 
-- Legacy query-parameter admin bypass is not present anymore:
-  - repository-wide search shows no `admin_key` or `dev-secret` references.
-- `/admin/payouts-ui` now requires Bearer JWT + admin role because it is protected by `Depends(require_admin_user)` and no query-param fallback exists.
-- Direct browser navigation to `/admin/payouts-ui?admin_key=dev-secret` does not supply `Authorization` header, so it fails auth despite query params.
-- UNKNOWN: exact commit/migration where `admin_key` bypass was removed (no remaining code references to trace in current tree).
+- UPDATED (ENRICHED RESPONSE)
+- `GET /admin/payouts` now mirrors the same enriched ledger grouping source as `/admin/payouts-ui`:
+  - uses `fetch_admin_ledger_groups(...)`,
+  - supports filter parity: `status`, `artist_id`, `artist_name`, `limit`.
+- `artist_name` filter is resolved to artist IDs using the same lookup pattern as HTML UI (`LOWER(artists.name) LIKE %...%`), then passed as `artist_ids_from_name`.
+- Response now includes enriched UI-facing fields:
+  - `batch_id`,
+  - `distinct_users`,
+  - `artist_id`,
+  - `artist_name`,
+  - `amount` (cents to float),
+  - `ui_status`,
+  - `wallet`,
+  - `tx` (`tx_id`, `explorer_url`),
+  - `created` (from `created_at` fallback `period_end_at`),
+  - `attempts`,
+  - `failure_reason`.
+- Backward-compat aliases are still returned for existing consumers (`status`, `created_at`, `attempt_count`, `destination_wallet`, `algorand_tx_id`, `tx_id`).
+- Each row includes `batch_status` from `payout_batches.status` (for admin UI lock/polling).
+
+### PROCESSING LOCK
+
+- IMPLEMENTED
+- `payout_batches.status` may be `processing`, `failed`, or `paid` (Alembic `0036_payout_batch_status_lock`, model check constraint updated).
+- `process_batch_settlement(...)` and `retry_failed_settlements_for_batch(...)` move the batch to `processing` before on-chain work, then set `paid` / `failed` / `posted` from settlement rows (`_derive_payout_batch_status`).
+- See **DB LOCKING** for cross-process safety when taking that transition.
+
+### DB LOCKING
+
+- IMPLEMENTED
+- Runtime dialect comes from SQLAlchemy `engine.dialect.name` on the live engine in `app/core/database.py` (`DATABASE_URL` → PostgreSQL; unset → SQLite `backend/dev.db`).
+- `app/services/payout_batch_lock.py`:
+  - **PostgreSQL:** `PayoutBatch` row loaded with `.with_for_update()`, status re-checked, then `processing` in the same short transaction (commit releases the row lock; `processing` blocks concurrent callers).
+  - **SQLite:** atomic `UPDATE payout_batches SET status='processing' WHERE id=? AND status IN (...)` (settle) or `status='failed'` (retry); exactly one session succeeds (`rowcount == 1`); concurrent losers raise `BatchLockContentionError` → **`POST /admin/settle-batch`** / **`POST /admin/retry-batch`** respond with **409** and detail `Batch is currently being processed by another admin`.
+  - **PostgreSQL:** if the row is already `processing` after `FOR UPDATE`, same `BatchLockContentionError` / **409**.
+
+### UX HARDENING
+
+- IMPLEMENTED
+- Lock contention is exposed as **HTTP 409** with a stable user-facing `detail` string (not a generic 500).
+- `BatchLockContentionError` is defined in `app/services/payout_batch_lock.py` and caught in `post_admin_settle_batch` / `post_admin_retry_batch` in `backend/app/api/routes.py`.
+
+### RETRY RESULT SUMMARY
+
+- IMPLEMENTED
+- `POST /admin/retry-batch/{batch_id}` returns JSON `{ "retried": int, "success": int, "failed": int }` (`success` = confirmed outcomes).
+- `retry_batch` audit rows store the same three fields in `metadata` (no extra keys).
+
+### ADMIN ACTION LOGGING
+
+- IMPLEMENTED
+- New DB-backed audit table/model exists: `admin_action_logs` (`backend/app/models/admin_action_log.py`, Alembic `0035_admin_action_logs`).
+- `process_batch_settlement(...)` now accepts `admin_user_id` and writes an audit row after successful settle execution:
+  - `action_type="settle_batch"`,
+  - `target_id=<batch_id>`,
+  - `admin_user_id=<current_admin_id>`,
+  - `metadata` stores the settle result summary.
+- New API endpoint `GET /admin/action-logs` is available, protected by `require_admin_user`, returning latest logs with limit.
+
+### ADMIN LOGS (ENRICHED)
+
+- IMPLEMENTED
+- `GET /admin/action-logs` joins `users` and returns `admin_user_email` (nullable if missing), plus full `metadata` (including retry `retried` / `success` / `failed` and settle outcome counts).
+
+### RETRY SYSTEM
+
+- IMPLEMENTED
+- New endpoint `POST /admin/retry-batch/{batch_id}` retries only failed settlement rows (`payout_settlements.execution_status='failed'`) for the batch.
+- Retry path does not run full-batch orchestration and reuses existing per-artist settlement execution logic.
+- Guardrails:
+  - requires `payout_batches.status == 'failed'` (not merely a failed row on another batch status),
+  - rejects when `payout_batches.status == 'processing'`,
+  - rejects when the batch has no failed settlements to retry.
+- Audit log is written on retry execution with `action_type="retry_batch"` and `target_id=<batch_id>` (see **RETRY RESULT SUMMARY** for `metadata` shape).
+
+### ADMIN PAYOUTS UI
+
+- LEGACY REMOVED
+- Backend route/handler `GET /admin/payouts-ui` has been deleted from `backend/app/api/routes.py`.
+- Admin payouts frontend now consumes JSON APIs only (`/admin/payouts`, `/admin/action-logs`).
 
 ## CURRENTLY IMPLEMENTED
 

@@ -206,6 +206,9 @@ def test_process_batch_settlement_mock_chain(memory_db):
     h2 = compute_breakdown_hash(json.loads(row.breakdown_json))
     assert h2 == row.breakdown_hash
 
+    batch_row = db.query(PayoutBatch).filter_by(id=int(batch.id)).one()
+    assert batch_row.status == "paid"
+
 
 def test_resume_submitted_does_not_resend(memory_db):
     """Submitted + tx_id: only wait_for_confirmation; never send_asset again."""
@@ -356,3 +359,6 @@ def test_resume_submitted_does_not_resend(memory_db):
     )
     assert row.execution_status == "confirmed"
     assert row.algorand_tx_id == "ALREADY_SENT_TX"
+
+    batch_row = db.query(PayoutBatch).filter_by(id=int(batch.id)).one()
+    assert batch_row.status == "paid"

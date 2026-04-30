@@ -25,8 +25,16 @@ from sqlalchemy.orm import Session
 from app.blockchain.algorand_client_v2 import AlgorandClient
 from app.core.database import SessionLocal
 from app.models.artist import Artist
+from app.models.admin_action_log import AdminActionLog
 from app.models.payout_batch import PayoutBatch
+from app.models.payout_line import PayoutLine
 from app.models.payout_settlement import PayoutSettlement
+from app.services.payout_batch_lock import (
+    LOCK_CONTENTION_MESSAGE,
+    BatchLockContentionError,
+    acquire_retry_processing_lock,
+    acquire_settle_processing_lock,
+)
 from app.services.settlement_breakdown import (
     build_payout_breakdown,
     breakdown_totals_match,
@@ -131,9 +139,55 @@ def _already_settled_artist_ids(db: Session, batch_id: int) -> set[int]:
     return {int(r[0]) for r in rows if r[0] is not None}
 
 
+def _derive_payout_batch_status(db: Session, batch_id: int) -> str:
+    """
+    Derive terminal batch status from ``payout_lines`` + ``payout_settlements``.
+
+    Returns ``failed`` if any settlement failed; ``paid`` if every artist with a
+    positive line total has a confirmed settlement; otherwise ``posted``.
+    """
+    failed_any = (
+        db.query(PayoutSettlement.id)
+        .filter(
+            PayoutSettlement.batch_id == int(batch_id),
+            PayoutSettlement.execution_status == "failed",
+        )
+        .first()
+    )
+    if failed_any is not None:
+        return "failed"
+
+    line_sums = (
+        db.query(
+            PayoutLine.artist_id,
+            func.coalesce(func.sum(PayoutLine.amount_cents), 0).label("cents"),
+        )
+        .filter(PayoutLine.batch_id == int(batch_id))
+        .group_by(PayoutLine.artist_id)
+        .all()
+    )
+    for row in line_sums:
+        aid = int(row[0])
+        cents = int(row[1] or 0)
+        if cents <= 0:
+            continue
+        ps = (
+            db.query(PayoutSettlement)
+            .filter(
+                PayoutSettlement.batch_id == int(batch_id),
+                PayoutSettlement.artist_id == aid,
+            )
+            .one_or_none()
+        )
+        if ps is None or str(ps.execution_status) != "confirmed":
+            return "posted"
+    return "paid"
+
+
 def process_batch_settlement(
     batch_id: int,
     *,
+    admin_user_id: Optional[int] = None,
     db: Optional[Session] = None,
     algorand_client_factory: Optional[Callable[[], AlgorandClient]] = None,
 ) -> dict:
@@ -156,6 +210,8 @@ def process_batch_settlement(
         batch = db.query(PayoutBatch).filter(PayoutBatch.id == int(batch_id)).one_or_none()
         if batch is None:
             raise ValueError(f"payout_batches not found batch_id={batch_id}")
+        if batch.status == "processing":
+            raise BatchLockContentionError(LOCK_CONTENTION_MESSAGE)
         if batch.status not in ("finalized", "posted"):
             raise RuntimeError(
                 f"Settlement requires batch status finalized or posted, got {batch.status!r}"
@@ -214,6 +270,9 @@ def process_batch_settlement(
                 "Settlement batch=%s skipped: all artists already confirmed",
                 int(batch_id),
             )
+            batch.status = _derive_payout_batch_status(db, int(batch_id))
+            db.add(batch)
+            db.commit()
             return {
                 "status": "skipped",
                 "reason": "batch already settled",
@@ -246,36 +305,53 @@ def process_batch_settlement(
         )
 
         skipped += pre_skipped
-        for artist_id in target_artist_ids:
-            try:
-                outcome = _settle_one_artist(
-                    db,
-                    batch_id=int(batch_id),
-                    artist_id=int(artist_id),
-                    client=client,
-                )
-            except Exception:
-                logger.exception(
-                    "Settlement artist raised batch=%s artist_id=%s",
-                    int(batch_id),
-                    int(artist_id),
-                )
-                failed += 1
-                continue
-            if outcome == "skipped":
-                skipped += 1
-            elif outcome == "confirmed":
-                confirmed += 1
-            elif outcome == "failed":
-                failed += 1
+        acquire_settle_processing_lock(db, int(batch_id))
+
+        settle_error = None
+        try:
+            for artist_id in target_artist_ids:
+                try:
+                    outcome = _settle_one_artist(
+                        db,
+                        batch_id=int(batch_id),
+                        artist_id=int(artist_id),
+                        client=client,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Settlement artist raised batch=%s artist_id=%s",
+                        int(batch_id),
+                        int(artist_id),
+                    )
+                    failed += 1
+                    continue
+                if outcome == "skipped":
+                    skipped += 1
+                elif outcome == "confirmed":
+                    confirmed += 1
+                elif outcome == "failed":
+                    failed += 1
+                else:
+                    logger.warning(
+                        "Unexpected settlement outcome batch=%s artist_id=%s outcome=%r",
+                        int(batch_id),
+                        int(artist_id),
+                        outcome,
+                    )
+                    failed += 1
+        except Exception as e:
+            settle_error = e
+            logger.exception(
+                "Settlement loop aborted for batch %s",
+                int(batch_id),
+            )
+
+        batch = db.query(PayoutBatch).filter(PayoutBatch.id == int(batch_id)).one()
+        if batch.status == "processing":
+            if settle_error is None:
+                batch.status = _derive_payout_batch_status(db, int(batch_id))
             else:
-                logger.warning(
-                    "Unexpected settlement outcome batch=%s artist_id=%s outcome=%r",
-                    int(batch_id),
-                    int(artist_id),
-                    outcome,
-                )
-                failed += 1
+                batch.status = "failed"
 
         n_after, dist_after = _payout_settlement_stats(db, int(batch_id))
         logger.info(
@@ -294,7 +370,7 @@ def process_batch_settlement(
         else:
             status = "processed"
 
-        return {
+        result = {
             "status": status,
             "batch_id": int(batch_id),
             "processed": confirmed,
@@ -303,8 +379,131 @@ def process_batch_settlement(
             "failed": failed,
             "artists": len(artist_ids),
         }
+        if admin_user_id is not None and settle_error is None:
+            log_row = AdminActionLog(
+                admin_user_id=int(admin_user_id),
+                action_type="settle_batch",
+                target_id=int(batch_id),
+                metadata_json=result,
+            )
+            db.add(log_row)
+        db.commit()
+
+        if settle_error is not None:
+            raise settle_error
+
+        return result
     except Exception:
         logger.exception("Settlement failed for batch %s", int(batch_id))
+        raise
+    finally:
+        if own_session:
+            db.close()
+
+
+def retry_failed_settlements_for_batch(
+    batch_id: int,
+    *,
+    admin_user_id: Optional[int] = None,
+    db: Optional[Session] = None,
+    algorand_client_factory: Optional[Callable[[], AlgorandClient]] = None,
+) -> dict:
+    """
+    Retry only failed payout settlements inside one batch.
+
+    Requires ``payout_batches.status == 'failed'``. Sets ``processing`` for the
+    duration, then ``paid`` / ``failed`` / ``posted`` from ledger state.
+
+    Returns ``{"retried", "success", "failed"}`` counts (``success`` = confirmed).
+    """
+    own_session = db is None
+    db = db if db is not None else SessionLocal()
+    retried = 0
+    success = 0
+    failed = 0
+    try:
+        batch = db.query(PayoutBatch).filter(PayoutBatch.id == int(batch_id)).one_or_none()
+        if batch is None:
+            raise ValueError(f"payout_batches not found batch_id={batch_id}")
+
+        failed_rows = (
+            db.query(PayoutSettlement)
+            .filter(
+                PayoutSettlement.batch_id == int(batch_id),
+                PayoutSettlement.execution_status == "failed",
+            )
+            .all()
+        )
+        if not failed_rows:
+            raise RuntimeError("No failed settlement rows found for this batch")
+
+        acquire_retry_processing_lock(db, int(batch_id))
+
+        if algorand_client_factory is None:
+            mnemonic_phrase = os.getenv("ALGOD_MNEMONIC")
+            if not mnemonic_phrase:
+                raise RuntimeError("ALGOD_MNEMONIC is not set; cannot settle on-chain")
+            client_factory = lambda: AlgorandClient(mnemonic_phrase)
+        else:
+            client_factory = algorand_client_factory
+        client = client_factory()
+
+        settle_error = None
+        try:
+            artist_ids = sorted({int(row.artist_id) for row in failed_rows})
+            for artist_id in artist_ids:
+                retried += 1
+                try:
+                    outcome = _settle_one_artist(
+                        db,
+                        batch_id=int(batch_id),
+                        artist_id=int(artist_id),
+                        client=client,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Retry artist raised batch=%s artist_id=%s",
+                        int(batch_id),
+                        int(artist_id),
+                    )
+                    failed += 1
+                    continue
+                if outcome == "confirmed":
+                    success += 1
+                elif outcome == "failed":
+                    failed += 1
+        except Exception as e:
+            settle_error = e
+            logger.exception("Retry loop aborted for batch %s", int(batch_id))
+
+        batch = db.query(PayoutBatch).filter(PayoutBatch.id == int(batch_id)).one()
+        if batch.status == "processing":
+            if settle_error is None:
+                batch.status = _derive_payout_batch_status(db, int(batch_id))
+            else:
+                batch.status = "failed"
+
+        summary = {
+            "retried": int(retried),
+            "success": int(success),
+            "failed": int(failed),
+        }
+        if admin_user_id is not None and settle_error is None:
+            log_row = AdminActionLog(
+                admin_user_id=int(admin_user_id),
+                action_type="retry_batch",
+                target_id=int(batch_id),
+                metadata_json=dict(summary),
+            )
+            db.add(log_row)
+        db.commit()
+
+        if settle_error is not None:
+            raise settle_error
+
+        return summary
+    except Exception:
+        logger.exception("Retry failed for batch %s", int(batch_id))
         raise
     finally:
         if own_session:

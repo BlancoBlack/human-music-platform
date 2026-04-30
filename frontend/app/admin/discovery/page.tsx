@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   fetchDiscoveryAdminAnalytics,
@@ -47,6 +48,12 @@ export default function AdminDiscoveryPage() {
       <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
         Internal, read-only telemetry aggregates.
       </p>
+      <div className="mt-3 flex items-center gap-4 text-sm">
+        <span className="font-medium">Discovery analytics</span>
+        <Link href="/admin/payouts" className="underline">
+          Payouts
+        </Link>
+      </div>
 
       {loading && (
         <p className="mt-6 text-sm text-neutral-500 dark:text-neutral-400">

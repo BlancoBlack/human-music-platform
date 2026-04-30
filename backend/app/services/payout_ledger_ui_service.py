@@ -4,9 +4,9 @@ and optional ``payout_settlements`` (on-chain status).
 
 UI labels:
 - ``paid`` — settlement ``execution_status == confirmed`` (funds sent on-chain).
-- ``accrued`` — batch ``finalized`` / ``posted`` but not yet confirmed on-chain.
+- ``accrued`` — batch ``finalized`` / ``posted`` / ``failed`` but not yet confirmed on-chain.
 - ``pending`` — batch ``calculating``.
-- ``processing`` — batch ``draft``.
+- ``processing`` — batch ``draft`` (pre-post) or batch ``processing`` (settlement/retry lock).
 - ``failed`` — settlement row exists with ``execution_status == failed``.
 """
 
@@ -31,6 +31,8 @@ def map_ledger_ui_status(
 ) -> str:
     ex = (settlement_execution_status or "").strip().lower()
     b = (batch_status or "").strip().lower()
+    if b == "processing":
+        return "processing"
     if b == "calculating":
         return "pending"
     if ex == "confirmed":
@@ -92,7 +94,7 @@ def artist_ledger_bucket_cents(db: Session, artist_id: int) -> Tuple[int, int, i
             ),
         )
         .filter(PayoutLine.artist_id == int(artist_id))
-        .filter(PayoutBatch.status.in_(("finalized", "posted")))
+        .filter(PayoutBatch.status.in_(("finalized", "posted", "failed")))
         .filter(
             (PayoutSettlement.id.is_(None))
             | (
@@ -292,11 +294,11 @@ def fetch_admin_ledger_groups(
         elif low == "paid":
             q = q.filter(_confirmed_settlement_exists())
         elif low == "accrued":
-            q = q.filter(PayoutBatch.status.in_(("finalized", "posted")))
+            q = q.filter(PayoutBatch.status.in_(("finalized", "posted", "failed")))
             q = q.filter(not_(_confirmed_settlement_exists()))
             q = q.filter(not_(_failed_settlement_exists()))
         elif low == "processing":
-            q = q.filter(PayoutBatch.status == "draft")
+            q = q.filter(PayoutBatch.status.in_(("draft", "processing")))
         elif low == "failed":
             q = q.filter(_failed_settlement_exists())
 
