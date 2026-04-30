@@ -121,10 +121,33 @@
 - Frontend API wrapper is `apiFetch()` in `frontend/lib/api.ts`.
 - Studio data calls are defined in `frontend/lib/api.ts` and used by studio pages/components.
 - `apiFetch()` uses browser `fetch` internally and applies auth headers/cookies centrally.
+- `apiFetch()` now includes a global auth interceptor:
+  - first 401 (except `/auth/refresh`) triggers single-flight refresh (`POST /auth/refresh`),
+  - successful refresh updates in-memory/localStorage access token,
+  - original request is retried once with fresh auth headers.
+- Frontend has a centralized auth-session bridge:
+  - `frontend/lib/authSessionManager.ts` connects non-React request/interceptor code to `AuthContext` logout behavior.
+  - `AuthContext.forceLogout(reason?)` is registered as the global invalid-session teardown handler.
 - No direct backend `fetch(...)` calls are present in active studio pages (`frontend/app/studio/*`).
+
+### Route Protection
+
+- `"/studio"` and all nested `"/studio/*"` routes are now layout-protected via `frontend/app/studio/layout.tsx` wrapped in `AuthGuard`.
+- `AuthGuard` is reactive to centralized auth state from `AuthContext` (`isLoading`, `isAuthenticated`):
+  - while loading: shows guard loading state (no premature redirect),
+  - when unauthenticated: redirects to `/login?returnUrl=...`.
+- Guard re-evaluates automatically when auth state changes (including interceptor-triggered `forceLogout`), so invalidated sessions inside protected routes redirect without manual page logic.
+- Session-expired UX is implemented in the login route:
+  - `AuthGuard` adds `reason=session_expired` to login redirect when logout came from invalid session reasons.
+  - Login page renders friendly copy (`"Your session has expired"`, `"For security reasons, please log in again."`) when `reason=session_expired`.
+  - Login success preserves `returnUrl` when present (validated internal path), otherwise falls back to onboarding/discovery routing.
 
 ## PARTIALLY IMPLEMENTED
 
+- Route protection remains component-driven; no stronger centralized route-guard policy was added in this session.
+- Current session-expired UX is intentionally minimal (login-page inline message + redirect context); no modal/banner/session page system.
+- Additional UX refinement opportunities remain (copy variants, optional inline recovery hints).
+- Session-expired UX is currently limited to login-page inline messaging; broader cross-page guidance remains pending.
 - `"/studio"` mixes real data with scaffold UI:
   - profile image block is placeholder UI
   - bio section/edit button is placeholder UI text
@@ -142,6 +165,9 @@
 
 ## KNOWN ISSUES
 
+- Global auth interceptor does not attempt replay-specific handling for non-replayable request body streams; current app calls are JSON/FormData-oriented and unaffected.
+- Client-side guard can still briefly render loading placeholders during hydration/bootstrapping before redirect decisions complete.
+- Session-expired reason context can be absent on direct `/login` visits or manual URL edits (login gracefully falls back to standard sign-in UI).
 - Studio secondary navigation exposes placeholder routes (`/studio/analytics`, `/studio/payouts`) as first-class tabs.
 - `"/studio"` dashboard suggests editable profile sections but edit actions are not wired to mutation flows.
 - Creator UX is split across modern studio routes and separate legacy-style creator pages (`/artist-analytics`, `/artist-catalog`, `/artist-upload`), which fragments the frontend surface.

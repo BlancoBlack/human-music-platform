@@ -1,3 +1,4 @@
+import { AuthGuard } from "@/components/AuthGuard";
 import { StudioLayout } from "@/components/studio/StudioLayout";
 
 export default function StudioRouteLayout({
@@ -5,5 +6,9 @@ export default function StudioRouteLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return <StudioLayout>{children}</StudioLayout>;
+  return (
+    <AuthGuard>
+      <StudioLayout>{children}</StudioLayout>
+    </AuthGuard>
+  );
 }

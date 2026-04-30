@@ -4,6 +4,27 @@
 
 ## CURRENTLY IMPLEMENTED
 
+- **Centralized frontend auth session manager**:
+  - `AuthContext` is the app-level source of truth for `user`, `accessToken`, `isAuthenticated`, and `isLoading` (`initializing` alias remains for compatibility).
+  - `forceLogout(reason?)` is exposed from `AuthContext` and is now the single invalid-session teardown path (clear memory token + local storage tokens + user state).
+  - Non-React request code integrates through `frontend/lib/authSessionManager.ts`, which registers/unregisters the context-backed logout handler.
+- **Reactive invalid-session handling**:
+  - `apiFetch` interceptor calls `forceLogout(...)` on refresh failure/missing refreshed token/network exception.
+  - `AuthContext.refreshSession()` and bootstrap error paths also call `forceLogout(...)`.
+  - `/auth/me` unauthorized outcomes continue to collapse session to unauthenticated state through existing bootstrap/refresh flows.
+- **Session-expired UX context propagation**:
+  - `forceLogout(reason?)` now stores logout reason in session storage (`hm_logout_reason`) via `authSessionManager`.
+  - `AuthGuard` consumes that reason and redirects protected-route unauthenticated users to `/login?reason=session_expired&returnUrl=...` for non-user-initiated logout reasons.
+  - Interceptor now passes explicit reasons (`interceptor_refresh_failed_status`, `interceptor_refresh_missing_access_token`, `interceptor_refresh_exception`, `unauthorized`) into `forceLogout`.
+- **Reactive protected-route redirect behavior**:
+  - `AuthGuard` consumes centralized auth state (`isLoading`, `isAuthenticated`) and redirects unauthenticated sessions to `/login?returnUrl=...`.
+  - `"/studio"` and `"/studio/*"` are protected at layout level (`frontend/app/studio/layout.tsx`), so route access is blocked whenever auth state becomes invalid.
+- **Global frontend auth interceptor** (`frontend/lib/api.ts`):
+  - `apiFetch()` now performs centralized 401 handling for all API calls except `/auth/refresh`.
+  - On first 401, it runs a single-flight refresh (`POST /auth/refresh`, `credentials: "include"`), updates access token in both React memory bridge (`authHeaders.updateAccessToken`) and localStorage (`hm_access_token`), then retries the original request once.
+  - Concurrent 401s share one in-flight refresh promise (`refreshPromise`) to prevent duplicate refresh calls.
+  - On refresh failure/network error, access+refresh tokens are cleared from client storage and in-memory access token is nulled; response is propagated to callers (no forced UI redirect in interceptor).
+
 - Authentication is JWT-based with refresh rotation and cookie support.
 - Canonical registration role model supports:
   - `role=user`,
@@ -16,6 +37,11 @@
 
 ## PARTIALLY IMPLEMENTED
 
+- Route-protection strategy remains primarily auth-check based; stronger centralized route guard behavior is still pending.
+- Session-expired UX is currently login-page scoped only (no global banner/modal framework yet).
+- Additional UX refinements (custom per-reason copy variants and richer guidance) are still pending.
+- Messaging is intentionally minimal and login-page scoped; no global notification/banner system exists yet.
+- Frontend interceptor retries requests once after refresh and preserves existing `RequestInit`; this is safe for current JSON/FormData usage, but fully general replay guarantees for one-shot streaming request bodies are not explicitly implemented.
 - Frontend enforces authentication broadly, but fine-grained role UX separation (user vs artist vs label) is still partial in route-level behavior.
 - RBAC schema still includes string linkage compatibility paths, increasing long-term drift risk.
 
@@ -27,6 +53,9 @@
 
 ## KNOWN ISSUES
 
+- Interceptor intentionally does not perform route redirects/logout UI transitions; auth UX reconciliation remains component/state driven.
+- Because protection is client-side in App Router components, users can observe a short guard loading state during hydration before redirect resolves.
+- Session-expired reason is ephemeral (session storage + query param) and can be missing on direct `/login` navigation or manual query editing.
 - Discovery admin analytics exposure risk:
   - `GET /discovery/admin/analytics` appears to lack explicit backend auth/admin guard in route definition.
 - Mixed legacy and modern surfaces reduce clarity of effective role boundaries.

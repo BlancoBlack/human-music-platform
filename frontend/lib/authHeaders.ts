@@ -4,6 +4,7 @@
  * importing React.
  */
 let accessTokenGetter: (() => string | null) | null = null;
+let accessTokenSetter: ((token: string | null) => void) | null = null;
 const ACCESS_TOKEN_STORAGE_KEY = "hm_access_token";
 
 export function registerAccessTokenGetter(fn: () => string | null): void {
@@ -12,6 +13,18 @@ export function registerAccessTokenGetter(fn: () => string | null): void {
 
 export function unregisterAccessTokenGetter(): void {
   accessTokenGetter = null;
+}
+
+export function registerAccessTokenSetter(fn: (token: string | null) => void): void {
+  accessTokenSetter = fn;
+}
+
+export function unregisterAccessTokenSetter(): void {
+  accessTokenSetter = null;
+}
+
+export function updateAccessToken(token: string | null): void {
+  accessTokenSetter?.(token);
 }
 
 export function getAuthHeaders(): Record<string, string> {

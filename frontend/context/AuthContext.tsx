@@ -31,8 +31,15 @@ import * as auth from "@/lib/auth";
 import type { UserMe } from "@/lib/auth";
 import {
   registerAccessTokenGetter,
+  registerAccessTokenSetter,
   unregisterAccessTokenGetter,
+  unregisterAccessTokenSetter,
 } from "@/lib/authHeaders";
+import {
+  setLogoutReason,
+  registerForceLogoutHandler,
+  unregisterForceLogoutHandler,
+} from "@/lib/authSessionManager";
 
 /** Single-flight refresh: one in-flight `refreshToken()` per tab (Strict Mode / parallel callers). */
 let refreshPromise: Promise<boolean> | null = null;
@@ -40,6 +47,7 @@ let refreshPromise: Promise<boolean> | null = null;
 type AuthContextValue = {
   user: UserMe | null;
   accessToken: string | null;
+  isLoading: boolean;
   initializing: boolean;
   authReady: boolean;
   isAuthenticated: boolean;
@@ -48,6 +56,7 @@ type AuthContextValue = {
   login: (email: string, password: string) => Promise<UserMe>;
   register: (payload: auth.RegisterPayload) => Promise<UserMe>;
   logout: () => Promise<void>;
+  forceLogout: (reason?: string) => Promise<void>;
   refreshSession: () => Promise<boolean>;
   /** One `/auth/me` fetch; use after profile-changing server actions. */
   refreshUser: () => Promise<UserMe | null>;
@@ -66,15 +75,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const tokenRef = useRef<string | null>(null);
   tokenRef.current = accessToken;
 
-  useEffect(() => {
-    registerAccessTokenGetter(() => tokenRef.current);
-    return () => unregisterAccessTokenGetter();
-  }, []);
-
   const commitAccessToken = useCallback((token: string | null) => {
     tokenRef.current = token;
     setAccessToken(token);
   }, []);
+
+  const forceLogout = useCallback(async (reason?: string) => {
+    if (reason) {
+      console.warn("[auth] forceLogout", { reason });
+      setLogoutReason(reason);
+    }
+    commitAccessToken(null);
+    auth.clearStoredTokens();
+    setUser(null);
+  }, [commitAccessToken]);
+
+  useEffect(() => {
+    registerAccessTokenGetter(() => tokenRef.current);
+    registerAccessTokenSetter((token) => {
+      commitAccessToken(token);
+    });
+    registerForceLogoutHandler((reason) => forceLogout(reason));
+    return () => {
+      unregisterAccessTokenGetter();
+      unregisterAccessTokenSetter();
+      unregisterForceLogoutHandler();
+    };
+  }, [commitAccessToken, forceLogout]);
 
   /** Single place that calls `GET /auth/me` (requires token already on `tokenRef`). */
   const syncUserFromMe = useCallback(async (): Promise<UserMe | null> => {
@@ -101,9 +128,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const tokens = await auth.refreshToken();
         if (!tokens?.access_token) {
-          commitAccessToken(null);
-          auth.clearStoredTokens();
-          setUser(null);
+          await forceLogout("refresh_missing_access_token");
           return false;
         }
         commitAccessToken(tokens.access_token);
@@ -112,16 +137,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return me != null;
       } catch (error) {
         console.warn("Refresh failed", error);
-        setUser(null);
-        commitAccessToken(null);
-        auth.clearStoredTokens();
+        await forceLogout("refresh_failed");
         return false;
       } finally {
         refreshPromise = null;
       }
     })();
     return refreshPromise;
-  }, [commitAccessToken]);
+  }, [commitAccessToken, forceLogout]);
 
   const refreshUser = useCallback(async () => {
     if (!tokenRef.current) {
@@ -159,29 +182,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (!me && storedRefresh) {
             const ok = await refreshSession();
             if (!cancelled && !ok) {
-              setUser(null);
-              commitAccessToken(null);
+              await forceLogout("bootstrap_refresh_failed");
             }
           } else if (!me && !storedRefresh) {
-            auth.clearStoredTokens();
-            setUser(null);
-            commitAccessToken(null);
+            await forceLogout("bootstrap_invalid_access_token");
           }
         } else if (storedRefresh) {
           const ok = await refreshSession();
           if (!cancelled && !ok) {
-            setUser(null);
-            commitAccessToken(null);
+            await forceLogout("bootstrap_refresh_only_failed");
           }
         } else {
-          setUser(null);
-          commitAccessToken(null);
+          await forceLogout("bootstrap_no_tokens");
         }
       } catch {
         if (!cancelled) {
-          setUser(null);
-          commitAccessToken(null);
-          auth.clearStoredTokens();
+          await forceLogout("bootstrap_exception");
         }
       } finally {
         if (!cancelled) setInitializing(false);
@@ -190,7 +206,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [refreshSession, commitAccessToken, syncUserFromMe]);
+  }, [refreshSession, commitAccessToken, syncUserFromMe, forceLogout]);
 
   const login = useCallback(
     async (email: string, password: string) => {
@@ -219,10 +235,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (e) {
       console.warn("Logout failed", e);
     }
-    commitAccessToken(null);
-    auth.clearStoredTokens();
-    setUser(null);
-  }, [commitAccessToken]);
+    await forceLogout("user_logout");
+  }, [forceLogout]);
 
   const exitImpersonation = useCallback(async () => {
     const ok = await refreshSession();
@@ -237,6 +251,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       user,
       accessToken,
+      isLoading: initializing,
       initializing,
       authReady: !initializing,
       isAuthenticated: user != null && !!accessToken,
@@ -244,6 +259,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       login,
       register,
       logout,
+      forceLogout,
       refreshSession,
       refreshUser,
       impersonateUser: impersonateUserFn,
@@ -257,6 +273,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       login,
       register,
       logout,
+      forceLogout,
       refreshSession,
       refreshUser,
       impersonateUserFn,

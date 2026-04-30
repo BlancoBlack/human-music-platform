@@ -2,17 +2,29 @@
 
 import Link from "next/link";
 import { Suspense, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import { resolveOnboardingRoute } from "@/lib/onboarding";
 
+function resolveSafeReturnUrl(value: string | null): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (!raw.startsWith("/")) return null;
+  if (raw.startsWith("//")) return null;
+  return raw;
+}
+
 function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const reason = searchParams.get("reason");
+  const returnUrl = resolveSafeReturnUrl(searchParams.get("returnUrl"));
+  const showSessionExpired = reason === "session_expired";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -21,7 +33,7 @@ function LoginForm() {
     try {
       const user = await login(email, password);
       console.info("[login] success", { email });
-      router.replace(resolveOnboardingRoute(user) ?? "/discovery");
+      router.replace(returnUrl ?? resolveOnboardingRoute(user) ?? "/discovery");
     } catch (err) {
       console.warn("[login] failed", { email });
       setError(err instanceof Error ? err.message : "Login failed");
@@ -35,6 +47,12 @@ function LoginForm() {
       <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">
         Sign in
       </h1>
+      {showSessionExpired ? (
+        <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-100">
+          <p className="font-medium">Your session has expired</p>
+          <p className="mt-1">For security reasons, please log in again.</p>
+        </div>
+      ) : null}
       <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
         Use the same account as the Human Music API (
         <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">

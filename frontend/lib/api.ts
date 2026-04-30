@@ -1,7 +1,80 @@
-import { getAuthHeaders } from "@/lib/authHeaders";
+import { getAuthHeaders, updateAccessToken } from "@/lib/authHeaders";
+import { forceLogout } from "@/lib/authSessionManager";
 import { API_BASE } from "@/lib/publicEnv";
 
 export { API_BASE };
+
+const ACCESS_TOKEN_STORAGE_KEY = "hm_access_token";
+const JSON_HEADERS = { "Content-Type": "application/json" } as const;
+
+let refreshPromise: Promise<string | null> | null = null;
+
+function canUseStorage(): boolean {
+  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+function setStoredAccessToken(token: string | null): void {
+  if (!canUseStorage()) return;
+  if (token && token.trim()) {
+    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, token.trim());
+  } else {
+    window.localStorage.removeItem(ACCESS_TOKEN_STORAGE_KEY);
+  }
+}
+
+function applyAccessToken(token: string | null): void {
+  updateAccessToken(token);
+  setStoredAccessToken(token);
+}
+
+function shouldRefresh(path: string, responseStatus: number): boolean {
+  if (responseStatus !== 401) return false;
+  return path !== "/auth/refresh";
+}
+
+async function refreshAccessTokenSingleFlight(): Promise<string | null> {
+  if (refreshPromise !== null) return refreshPromise;
+  refreshPromise = (async (): Promise<string | null> => {
+    const refreshRes = await fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({}),
+      credentials: "include",
+    });
+    if (!refreshRes.ok) {
+      await forceLogout("interceptor_refresh_failed_status");
+      return null;
+    }
+    const tokens = (await refreshRes.json()) as {
+      access_token?: string | null;
+      refresh_token?: string | null;
+    };
+    const access = (tokens.access_token || "").trim();
+    if (!access) {
+      await forceLogout("interceptor_refresh_missing_access_token");
+      return null;
+    }
+    applyAccessToken(access);
+    return access;
+  })()
+    .catch(async (error) => {
+      await forceLogout("interceptor_refresh_exception");
+      throw error;
+    })
+    .finally(() => {
+      refreshPromise = null;
+    });
+  return refreshPromise;
+}
+
+function buildHeaders(init: RequestInit): Headers {
+  const merged = new Headers(init.headers);
+  const auth = getAuthHeaders();
+  for (const [k, v] of Object.entries(auth)) {
+    if (!merged.has(k)) merged.set(k, v);
+  }
+  return merged;
+}
 
 /** Authenticated API calls: merges `Authorization` when logged in; sends cookies for `/auth/*`. */
 export async function apiFetch(
@@ -9,18 +82,39 @@ export async function apiFetch(
   init: RequestInit = {},
 ): Promise<Response> {
   const url = `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
-  const merged = new Headers(init.headers);
-  const auth = getAuthHeaders();
-  for (const [k, v] of Object.entries(auth)) {
-    if (!merged.has(k)) merged.set(k, v);
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const hadAccessToken = Boolean(getAuthHeaders().Authorization);
+
+  const perform = async (): Promise<Response> =>
+    fetch(url, {
+      ...init,
+      headers: buildHeaders(init),
+      credentials: init.credentials ?? "include",
+    });
+
+  let response = await perform();
+  if (shouldRefresh(normalizedPath, response.status)) {
+    try {
+      const refreshedAccess = await refreshAccessTokenSingleFlight();
+      if (refreshedAccess) {
+        response = await perform();
+      }
+    } catch (error) {
+      console.warn("[api] refresh failed", { path: normalizedPath, error });
+    }
   }
-  const response = await fetch(url, {
-    ...init,
-    headers: merged,
-    credentials: init.credentials ?? "include",
-  });
+
   if (response.status === 401 || response.status === 403) {
     console.warn("[api] auth response", { path, status: response.status });
+  }
+  if (
+    response.status === 401 &&
+    hadAccessToken &&
+    normalizedPath !== "/auth/refresh" &&
+    normalizedPath !== "/auth/login" &&
+    normalizedPath !== "/auth/register"
+  ) {
+    await forceLogout("unauthorized");
   }
   return response;
 }
