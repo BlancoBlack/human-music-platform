@@ -1,4 +1,4 @@
-# Requires Python >= 3.10 for runtime (project source uses PEP 604 type unions).
+# Requires Python >= 3.11 for runtime (project source uses datetime.UTC and modern typing).
 alembic==1.17.2
 fastapi==0.135.3
 httpx==0.28.1

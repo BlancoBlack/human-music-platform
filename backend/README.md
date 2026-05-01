@@ -2,9 +2,9 @@
 
 ## Python Version Requirement
 
-This project requires **Python 3.10 or higher**.
+This project requires **Python 3.11 or higher**.
 
-It will NOT run on Python 3.9 or lower due to usage of modern typing syntax (e.g. `str | None`).
+It will NOT run on Python 3.10 or lower due to usage of `datetime.UTC` and modern typing syntax.
 
 Check your version:
 
@@ -13,6 +13,31 @@ python3 --version
 ```
 
 Project-wide quickstart (Redis, venv, API, worker, frontend) lives in the **[root README.md](../README.md)**. Work from this directory for Python commands.
+
+
+## Quickstart (Reproducible)
+
+Requires Python 3.11+
+
+### Setup
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Run server
+
+```bash
+uvicorn app.main:app --reload
+```
+
+### Run tests
+
+```bash
+pytest
+```
 
 ---
 
@@ -133,7 +158,7 @@ This CI flow is intentionally minimal (schema + taxonomy + tests), not full demo
 
 From `backend/`:
 
-0. Prerequisite: Python `3.10+` (3.9 is not supported by current runtime annotations).
+0. Prerequisite: Python `3.11+`.
 1. Create virtual environment:
    - `python3.11 -m venv .venv`
 2. Activate:

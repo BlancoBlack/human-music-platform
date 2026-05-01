@@ -124,6 +124,7 @@
 ### Documentation system behavior
 
 - Documentation system enforces state-linked structure.
+- Backend local environment is reproducible with Python 3.11+ (`backend/.python-version`) and `pip install -r backend/requirements.txt`; test/runtime deps (including `pytest`, `httpx`, `passlib`, `PyJWT`, `pillow`) are declared so `pytest` can run locally in a clean venv.
 - All docs require explicit link to state files.
 - Inconsistencies between docs and state are tracked in KNOWN ISSUES.
 
