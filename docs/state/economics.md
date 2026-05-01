@@ -5,8 +5,11 @@
 ## CURRENTLY IMPLEMENTED
 
 - Payout truth in artist/studio dashboards is ledger-based (`payout_lines` + `payout_batches` + `payout_settlements`).
+- Canonical Ledger V2 payout aggregation service is implemented at `app/services/payout_aggregation_service.py` and is the single source for artist payout buckets across dashboard/ledger UI read paths.
+- Artist payout history from that service (and `GET /studio/{artist_id}/payouts`) includes optional `tx_id` from `payout_settlements.algorand_tx_id` and optional `explorer_url` (Lora URL when `tx_id` is set), built in the backend via `app/core/explorer_urls.py` — same source as admin payout rows’ `tx.explorer_url`.
 - "Paid" means settlement-confirmed on-chain (`execution_status='confirmed'`).
-- "Accrued" means finalized/posted ledger value not yet confirmed on-chain.
+- "Failed" means settlement failed on-chain (`execution_status='failed'`).
+- "Accrued" means finalized/posted ledger value not yet confirmed/failed on-chain.
 - "Pending" means batches still calculating.
 - Snapshot-based V2 payout flow exists end-to-end:
   - snapshot inputs,
@@ -56,6 +59,7 @@
 ### Artist dashboard numbers (ledger-centric)
 
 - **`get_artist_dashboard(artist_id)`** (`artist_dashboard_service.py`): aggregates from **`payout_lines`** joined with **`payout_batches`** / **`payout_settlements`**:
+  - Uses canonical helper `get_artist_payout_summary_with_db(...)` from `payout_aggregation_service.py`.
   - **Total** — sum of all lines for artist.
   - **Paid** — lines where settlement `execution_status == 'confirmed'`.
   - **Accrued** — batches `finalized` or `posted` but settlement missing or not confirmed/failed.

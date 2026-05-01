@@ -34,6 +34,26 @@ function truncateMiddle(value: string, prefix = 6, suffix = 4): string {
   return `${value.slice(0, prefix)}...${value.slice(-suffix)}`;
 }
 
+async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function statusBadgeClass(status: string): string {
   const key = (status || "").toLowerCase();
   if (key === "paid") return "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200";
@@ -516,11 +536,15 @@ export default function AdminPayoutsPage() {
             <tbody>
               {rows.map((row) => {
                 const tx = dash(row.tx?.tx_id ?? row.algorand_tx_id);
-                const txHref =
+                const explorerUrl =
                   row.tx?.explorer_url && String(row.tx.explorer_url).trim()
-                    ? String(row.tx.explorer_url)
-                    : tx !== "—"
-                      ? `https://lora.algokit.io/testnet/transaction/${encodeURIComponent(tx)}`
+                    ? String(row.tx.explorer_url).trim()
+                    : null;
+                const rawTxForCopy =
+                  row.tx?.tx_id != null && String(row.tx.tx_id).trim()
+                    ? String(row.tx.tx_id).trim()
+                    : row.algorand_tx_id != null && String(row.algorand_tx_id).trim()
+                      ? String(row.algorand_tx_id).trim()
                       : null;
                 const wallet = dash(row.wallet ?? row.destination_wallet);
                 const batchBusy = settlingBatchId === row.batch_id;
@@ -559,15 +583,40 @@ export default function AdminPayoutsPage() {
                       {wallet === "—" ? "—" : truncateMiddle(wallet)}
                     </td>
                     <td className="max-w-[160px] truncate px-3 py-2">
-                      {txHref ? (
+                      {explorerUrl ? (
                         <a
-                          href={txHref}
+                          href={explorerUrl}
                           target="_blank"
                           rel="noreferrer"
                           className="underline"
                         >
                           {truncateMiddle(tx, 4, 4)}
                         </a>
+                      ) : rawTxForCopy ? (
+                        <span className="inline-flex max-w-full items-center gap-1">
+                          <span className="min-w-0 truncate font-mono text-xs" title={rawTxForCopy}>
+                            {truncateMiddle(tx, 4, 4)}
+                          </span>
+                          <button
+                            type="button"
+                            title={`Copy: ${rawTxForCopy}`}
+                            aria-label="Copy transaction ID"
+                            className="inline-flex shrink-0 rounded p-0.5 text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+                            onClick={() => {
+                              void copyTextToClipboard(rawTxForCopy);
+                            }}
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 20 20"
+                              fill="currentColor"
+                              className="h-3.5 w-3.5"
+                              aria-hidden
+                            >
+                              <path d="M7 3.5A1.5 1.5 0 0 1 8.5 2h6A1.5 1.5 0 0 1 16 3.5v10a1.5 1.5 0 0 1-1.5 1.5h-1v-9A2.5 2.5 0 0 0 11 3.5H7Zm-2.5 3A2.5 2.5 0 0 0 2 9v6.5A2.5 2.5 0 0 0 4.5 18h6a2.5 2.5 0 0 0 2.5-2.5V9A2.5 2.5 0 0 0 10.5 6.5h-6Z" />
+                            </svg>
+                          </button>
+                        </span>
                       ) : (
                         "—"
                       )}

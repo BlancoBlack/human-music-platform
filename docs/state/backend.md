@@ -130,20 +130,51 @@
 - Studio JSON endpoints are live and power the React `/studio` surfaces:
   - `GET /studio/me`,
   - `GET /studio/{artist_id}/dashboard`,
+  - `GET /studio/{artist_id}/payouts`,
   - `GET /studio/{artist_id}/catalog`,
   - `GET /studio/{artist_id}/releases`,
   - approvals endpoints under `/studio/releases/*`.
+- `GET /studio/{artist_id}/payouts` is implemented as a thin read-only adapter in `backend/app/api/routes.py`:
+  - auth: `Depends(require_artist_owner)`,
+  - source of truth: `app/services/payout_aggregation_service.py` only,
+  - endpoint calls only:
+    - `get_artist_payout_summary(...)`,
+    - `get_artist_payout_history(...)`,
+    - `get_artist_payout_capabilities(...)`,
+  - no endpoint-local payout SQL / ledger-table query logic.
+- `/studio/{artist_id}/payouts` response contract:
+  - `summary`: `paid_eur`, `accrued_eur`, `pending_eur`, `failed_eur`, `batch_count`, `last_batch_date`,
+  - `history[]`: `batch_id` (string), `date` (ISO string), `amount_eur`, `status` (`paid|pending|failed`), `users`, `tx_id` (nullable string from `payout_settlements.algorand_tx_id`, same value as admin payouts for the batch), `explorer_url` (nullable string: Lora transaction URL when `tx_id` is present, built in backend via `app/core/explorer_urls.py`, same logic as `GET /admin/payouts` `tx.explorer_url`),
+  - `payout_method`: `selected` (`crypto|bank|none`), `supports_onchain_settlement`, `requires_manual_settlement`, `wallet_address`, `bank_configured`.
+- On-chain transaction explorer links for API consumers are centralized in `app/core/explorer_urls.py` (`lora_transaction_explorer_url`), driven by `NETWORK` (`testnet` vs `mainnet`); studio payout history and admin payouts JSON both use this helper so URLs do not drift.
+- Security posture for `/studio/{artist_id}/payouts` payout method payload:
+  - does not expose bank detail text,
+  - returns only `bank_configured` boolean for bank info presence.
+- Artist payout configuration update is ownership-controlled:
+  - `POST /artist/{artist_id}/payout-method` now uses `Depends(require_artist_owner)` (not admin-only),
+  - validates `payout_method in {crypto, bank, none}`,
+  - requires wallet when `crypto`, requires bank payload when `bank`,
+  - response is JSON `{ success: true, payout_method: { selected, wallet_address, bank_configured } }` without exposing bank detail content.
 - Legacy HTML dashboards remain active in `backend/app/api/routes.py`:
   - `/artist-analytics/{artist_id}`,
-  - `/artist-payouts/{artist_id}`,
   - `/artist-dashboard/{artist_id}`,
   - `/dashboard/{user_id}`.
+- `GET /artist-payouts/{artist_id}` is a **302 redirect** to Next Studio `/studio/payouts` (same `NEXT_APP_BASE_URL` as other hub links); the old HTML payouts page was removed. Payout data and method updates use `GET /studio/{artist_id}/payouts` and `POST /artist/{artist_id}/payout-method`.
 - Artist analytics APIs are implemented in `analytics_service.py` and include:
   - streams over time,
   - top songs,
   - top fans,
   - narrative insights.
-- Studio/artist dashboard totals are ledger-backed through `get_artist_dashboard()` and payout ledger services.
+- Studio/artist dashboard totals are ledger-backed through `get_artist_dashboard()` and canonical aggregation in `app/services/payout_aggregation_service.py`.
+- Canonical artist payout helpers now live in `payout_aggregation_service.py`:
+  - `get_artist_payout_summary(...)`,
+  - `get_artist_payout_history(...)`,
+  - `get_artist_payout_capabilities(...)`.
+- Bucket definitions are unified in that service:
+  - paid = settlement `execution_status='confirmed'`,
+  - failed = settlement `execution_status='failed'`,
+  - pending = batch `status='calculating'`,
+  - accrued = batch `status IN ('finalized','posted')` and settlement not confirmed/failed.
 - Ownership-gated access is implemented via dependencies:
   - `require_artist_owner`,
   - `require_self_or_admin`,

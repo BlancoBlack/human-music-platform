@@ -1,6 +1,10 @@
 from app.core.database import SessionLocal
 from sqlalchemy import text
 
+from app.services.payout_aggregation_service import (
+    get_artist_payout_history_with_db,
+    get_artist_payout_summary_with_db,
+)
 from app.services.pool_payout_service import calculate_artist_spotify_equivalent
 
 
@@ -22,74 +26,11 @@ def get_artist_dashboard(artist_id: int):
             ).scalar()
             or 0
         )
-        paid_cents = (
-            db.execute(
-                text(
-                    """
-                    SELECT COALESCE(SUM(pl.amount_cents), 0)
-                    FROM payout_lines pl
-                    INNER JOIN payout_settlements ps
-                      ON ps.batch_id = pl.batch_id AND ps.artist_id = pl.artist_id
-                    WHERE pl.artist_id = :artist_id
-                      AND ps.execution_status = 'confirmed'
-                    """
-                ),
-                {"artist_id": artist_id},
-            ).scalar()
-            or 0
-        )
-        accrued_cents = (
-            db.execute(
-                text(
-                    """
-                    SELECT COALESCE(SUM(pl.amount_cents), 0)
-                    FROM payout_lines pl
-                    INNER JOIN payout_batches pb ON pb.id = pl.batch_id
-                    LEFT JOIN payout_settlements ps
-                      ON ps.batch_id = pl.batch_id AND ps.artist_id = pl.artist_id
-                    WHERE pl.artist_id = :artist_id
-                      AND pb.status IN ('finalized', 'posted')
-                      AND (
-                        ps.id IS NULL
-                        OR ps.execution_status NOT IN ('confirmed', 'failed')
-                      )
-                    """
-                ),
-                {"artist_id": artist_id},
-            ).scalar()
-            or 0
-        )
-        failed_cents = (
-            db.execute(
-                text(
-                    """
-                    SELECT COALESCE(SUM(pl.amount_cents), 0)
-                    FROM payout_lines pl
-                    INNER JOIN payout_settlements ps
-                      ON ps.batch_id = pl.batch_id AND ps.artist_id = pl.artist_id
-                    WHERE pl.artist_id = :artist_id
-                      AND ps.execution_status = 'failed'
-                    """
-                ),
-                {"artist_id": artist_id},
-            ).scalar()
-            or 0
-        )
-        pending_cents = (
-            db.execute(
-                text(
-                    """
-                    SELECT COALESCE(SUM(pl.amount_cents), 0)
-                    FROM payout_lines pl
-                    JOIN payout_batches pb ON pb.id = pl.batch_id
-                    WHERE pl.artist_id = :artist_id
-                      AND pb.status = 'calculating'
-                    """
-                ),
-                {"artist_id": artist_id},
-            ).scalar()
-            or 0
-        )
+        summary = get_artist_payout_summary_with_db(db, int(artist_id))
+        paid_cents = int(summary["paid_cents"])
+        accrued_cents = int(summary["accrued_cents"])
+        failed_cents = int(summary["failed_cents"])
+        pending_cents = int(summary["pending_cents"])
 
         by_song_rows = db.execute(
             text(
@@ -129,33 +70,15 @@ def get_artist_dashboard(artist_id: int):
         spotify_total = calculate_artist_spotify_equivalent(artist_id)
         difference = round(float(total) - float(spotify_total), 2)
 
-        last_payout_rows = db.execute(
-            text(
-                """
-                SELECT
-                    pb.id AS batch_id,
-                    pb.period_end_at AS payout_date,
-                    COALESCE(SUM(pl.amount_cents), 0) AS amount_cents
-                FROM payout_lines pl
-                JOIN payout_batches pb ON pb.id = pl.batch_id
-                INNER JOIN payout_settlements ps
-                  ON ps.batch_id = pl.batch_id AND ps.artist_id = pl.artist_id
-                WHERE pl.artist_id = :artist_id
-                  AND ps.execution_status = 'confirmed'
-                GROUP BY pb.id, pb.period_end_at
-                ORDER BY pb.period_end_at DESC, pb.id DESC
-                LIMIT 3
-                """
-            ),
-            {"artist_id": artist_id},
-        ).fetchall()
+        history_rows = get_artist_payout_history_with_db(db, int(artist_id))
+        paid_history = [row for row in history_rows if row["status"] == "paid"][:3]
         last_payouts = [
             {
-                "batch_id": int(row.batch_id),
-                "payout_date": row.payout_date,
-                "amount": round(int(row.amount_cents or 0) / 100.0, 2),
+                "batch_id": int(row["batch_id"]),
+                "payout_date": row["date"],
+                "amount": round(int(row["amount_cents"] or 0) / 100.0, 2),
             }
-            for row in last_payout_rows
+            for row in paid_history
         ]
 
         payout_rows = db.execute(

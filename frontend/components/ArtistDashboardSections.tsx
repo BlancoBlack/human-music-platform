@@ -56,7 +56,7 @@ export function PayoutsSection({ data }: { data: ArtistDashboardData }) {
         ))}
       </ul>
       <p>
-        <a href={`/artist-payouts/${data.artist_id}`}>View all payouts →</a>
+        <a href="/studio/payouts">View all payouts (Studio) →</a>
       </p>
       <p>
         <strong>Next payout:</strong> {data.next_payout_date ?? "—"}
@@ -129,7 +129,7 @@ export function ArtistDashboardPage({ data }: { data: ArtistDashboardData }) {
           <strong>Overview</strong>
         </a>{" "}
         | <a href={`/artist-analytics/${data.artist_id}`}>Analytics</a> |{" "}
-        <a href={`/artist-payouts/${data.artist_id}`}>Payouts</a> |{" "}
+        <a href="/studio/payouts">Payouts</a> |{" "}
         <a href={`/artist-profile/${data.artist_id}`}>Profile</a>
       </nav>
       <EstimatedEarningsSection data={data} />

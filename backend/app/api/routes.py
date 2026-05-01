@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from collections import deque
+from decimal import Decimal
 from datetime import date, datetime, timedelta
 from typing import Annotated, Literal, Optional
 from urllib.parse import quote, urlencode
@@ -49,6 +50,7 @@ from app.api.schemas.studio import (
     ReleaseDetailResponse,
 )
 from app.core.database import SessionLocal, get_db
+from app.core.explorer_urls import lora_transaction_explorer_url
 from app.data.genres import CANONICAL_GENRE_ORDER
 from app.models.artist import Artist
 from app.models.genre import Genre
@@ -77,10 +79,13 @@ from app.services.media_urls import public_media_url_from_stored_path
 from app.services.payout_batch_lock import BatchLockContentionError
 from app.services.payout_service import calculate_user_distribution
 from app.services.payout_ledger_ui_service import (
-    artist_batch_history,
-    artist_ledger_bucket_cents,
     fetch_admin_ledger_groups,
     synthetic_ledger_group_id,
+)
+from app.services.payout_aggregation_service import (
+    get_artist_payout_capabilities,
+    get_artist_payout_history,
+    get_artist_payout_summary,
 )
 from app.services.artist_distribution_service import expand_song_distribution_to_artists
 from app.services.pool_payout_service import calculate_global_distribution
@@ -133,14 +138,6 @@ from app.workers.settlement_worker import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Lora explorer (AlgoExplorer deprecated)
-# NETWORK controls testnet vs mainnet
-NETWORK = os.getenv("NETWORK", "testnet")
-if NETWORK == "mainnet":
-    EXPLORER_BASE_URL = "https://lora.algokit.io/mainnet"
-else:
-    EXPLORER_BASE_URL = "https://lora.algokit.io/testnet"
 
 router = APIRouter()
 
@@ -362,11 +359,12 @@ def _artist_hub_html_head(page_title: str, *, extra_head: str = "") -> str:
 
 
 def _artist_hub_nav(artist_id: int, active: str) -> str:
-    """active: overview | analytics | payouts"""
+    """active: overview | analytics | payouts (payouts href is Next Studio; no legacy HTML page)."""
+    studio_payouts = f"{_next_app_base_url()}/studio/payouts"
     items: list[tuple[str, str, str]] = [
         ("overview", f"/artist-dashboard/{artist_id}", "Overview"),
         ("analytics", f"/artist-analytics/{artist_id}", "Analytics"),
-        ("payouts", f"/artist-payouts/{artist_id}", "Payouts"),
+        ("payouts", studio_payouts, "Payouts"),
         ("upload", _artist_upload_href(artist_id), "Upload"),
         ("catalog", _artist_catalog_href(artist_id), "Catalog"),
     ]
@@ -593,65 +591,6 @@ def _html_escape(text: object) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
         .replace('"', "&quot;")
-    )
-
-
-def _payout_status_display(status: Optional[str]) -> str:
-    if not status:
-        return "—"
-    lowered = status.strip().lower()
-    if lowered in ("paid", "pending", "processing", "accrued", "failed"):
-        return lowered
-    return _html_escape(status.strip())
-
-
-def _artist_payout_method_banner(artist: Artist) -> str:
-    method = (artist.payout_method or "none").strip().lower()
-    wallet = (artist.payout_wallet_address or "").strip()
-    bank = (artist.payout_bank_info or "").strip()
-
-    if method not in ALLOWED_PAYOUT_METHODS:
-        return (
-            '<p class="ah-warn" style="margin:0;">'
-            "⚠️ Payout method incomplete"
-            "</p>"
-        )
-
-    if method == "none":
-        return (
-            '<p class="ah-warn" style="margin:0;">'
-            "⚠️ No payout method configured"
-            "</p>"
-        )
-
-    if method == "crypto":
-        if not wallet:
-            return (
-                '<p class="ah-warn" style="margin:0;">'
-                "⚠️ Payout method incomplete"
-                "</p>"
-            )
-        return (
-            "<p style='margin:0 0 8px 0;'><b>💸 Payout method:</b> Crypto (Algorand)</p>"
-            f"<p style='margin:0;'><b>Address:</b> {_html_escape(wallet)}</p>"
-        )
-
-    if method == "bank":
-        if not bank:
-            return (
-                '<p class="ah-warn" style="margin:0;">'
-                "⚠️ Payout method incomplete"
-                "</p>"
-            )
-        return (
-            "<p style='margin:0 0 8px 0;'><b>🏦 Payout method:</b> Bank transfer</p>"
-            f"<p style='margin:0;'><b>Details:</b> {_html_escape(bank)}</p>"
-        )
-
-    return (
-        '<p class="ah-warn" style="margin:0;">'
-        "⚠️ Payout method incomplete"
-        "</p>"
     )
 
 
@@ -1652,6 +1591,65 @@ def get_studio_artist_dashboard(
     _owned_artist: Artist = Depends(require_artist_owner),
 ):
     return get_artist_dashboard(int(artist_id))
+
+
+@router.get("/studio/{artist_id}/payouts")
+def get_studio_artist_payouts(
+    artist_id: int,
+    _owned_artist: Artist = Depends(require_artist_owner),
+):
+    summary = get_artist_payout_summary(int(artist_id))
+    history = get_artist_payout_history(int(artist_id))
+    capabilities = get_artist_payout_capabilities(int(artist_id))
+
+    def cents_to_eur(cents: int) -> float:
+        return float((Decimal(int(cents)) / Decimal("100")).quantize(Decimal("0.01")))
+
+    last_batch_date = summary.get("last_batch_date")
+    summary_payload = {
+        "paid_eur": cents_to_eur(int(summary.get("paid_cents", 0))),
+        "accrued_eur": cents_to_eur(int(summary.get("accrued_cents", 0))),
+        "pending_eur": cents_to_eur(int(summary.get("pending_cents", 0))),
+        "failed_eur": cents_to_eur(int(summary.get("failed_cents", 0))),
+        "batch_count": int(summary.get("batch_count", 0)),
+        "last_batch_date": last_batch_date.isoformat() if last_batch_date is not None else None,
+    }
+
+    history_payload = []
+    for row in history:
+        row_date = row.get("date")
+        history_payload.append(
+            {
+                "batch_id": str(row.get("batch_id")),
+                "date": row_date.isoformat() if row_date is not None else "",
+                "amount_eur": cents_to_eur(int(row.get("amount_cents", 0))),
+                "status": str(row.get("status") or "pending"),
+                "users": int(row.get("distinct_users", 0)),
+                "tx_id": row.get("tx_id"),
+                "explorer_url": row.get("explorer_url"),
+            }
+        )
+
+    selected = str(capabilities.get("payout_method_selected") or "none").strip().lower()
+    if selected not in ("crypto", "bank", "none"):
+        selected = "none"
+    payout_method_payload = {
+        "selected": selected,
+        "supports_onchain_settlement": bool(
+            capabilities.get("supports_onchain_settlement", False)
+        ),
+        "requires_manual_settlement": bool(
+            capabilities.get("requires_manual_settlement", False)
+        ),
+        "wallet_address": capabilities.get("wallet_address"),
+        "bank_configured": bool(capabilities.get("bank_configured", False)),
+    }
+
+    return {
+        "summary": summary_payload,
+        "history": history_payload,
+        "payout_method": payout_method_payload,
+    }
 
 
 @router.post("/studio/context")
@@ -3518,7 +3516,7 @@ def artist_dashboard(
             {failed_html}
             <h3 style="margin-top:16px; margin-bottom:10px;">Last on-chain payouts</h3>
             {last_payouts_html}
-            <p style="margin-top:10px;"><a class="ah-inline-link" href="/artist-payouts/{artist_id}">View all payouts →</a></p>
+            <p style="margin-top:10px;"><a class="ah-inline-link" href="{_next_app_base_url()}/studio/payouts">View all payouts (Studio) →</a></p>
             <p style="margin-top:16px;"><b>Next payout:</b> {next_payout_date.isoformat()}</p>
             {pending_html}
         </section>
@@ -3624,7 +3622,7 @@ def post_artist_payout_method(
     payout_method: str = Form(...),
     payout_wallet_address: str = Form(""),
     payout_bank_info: str = Form(""),
-    _permission_user: User = Depends(require_permission("admin_full_access")),
+    _owned_artist: Artist = Depends(require_artist_owner),
     _reject_impersonation: None = Depends(require_non_impersonation),
 ):
     raw_method = payout_method.strip().lower()
@@ -3675,13 +3673,19 @@ def post_artist_payout_method(
         artist.payout_wallet_address = w_store
         artist.payout_bank_info = b_store
         db.commit()
+        selected = (artist.payout_method or "none").strip().lower()
+        if selected not in ("crypto", "bank", "none"):
+            selected = "none"
+        return {
+            "success": True,
+            "payout_method": {
+                "selected": selected,
+                "wallet_address": artist.payout_wallet_address,
+                "bank_configured": bool((artist.payout_bank_info or "").strip()),
+            },
+        }
     finally:
         db.close()
-
-    return RedirectResponse(
-        url=f"/artist-payouts/{artist_id}",
-        status_code=303,
-    )
 
 
 @router.get("/admin/payouts")
@@ -3742,9 +3746,7 @@ def get_admin_payouts(
                 "destination_wallet": g.destination_wallet,
                 "tx": {
                     "tx_id": tx_id,
-                    "explorer_url": (
-                        f"{EXPLORER_BASE_URL}/transaction/{quote(tx_id)}" if tx_id else None
-                    ),
+                    "explorer_url": lora_transaction_explorer_url(tx_id),
                 },
                 "created": created.isoformat() if created is not None else None,
                 "created_at": created.isoformat() if created is not None else None,
@@ -3846,148 +3848,16 @@ def post_admin_retry_batch(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/artist-payouts/{artist_id}", response_class=HTMLResponse)
-def artist_payouts(
+@router.get("/artist-payouts/{artist_id}")
+def redirect_artist_payouts_to_studio(
     artist_id: int,
     _owned_artist: Artist = Depends(require_artist_owner),
 ):
-    db = SessionLocal()
-    try:
-        artist = db.query(Artist).filter(Artist.id == int(artist_id)).first()
-        if artist is None:
-            raise HTTPException(status_code=404, detail="Artist not found")
-
-        paid_cents, accrued_cents, pending_cents = artist_ledger_bucket_cents(
-            db, artist_id
-        )
-        batch_rows = artist_batch_history(db, artist_id)
-    finally:
-        db.close()
-
-    total_paid = round(float(paid_cents) / 100.0, 2)
-    total_accrued = round(float(accrued_cents) / 100.0, 2)
-    total_pending = round(float(pending_cents) / 100.0, 2)
-    payout_count = len(batch_rows)
-    last_payout_date = "—"
-    if batch_rows:
-        first = batch_rows[0]
-        if first.period_end_at is not None:
-            last_payout_date = first.period_end_at.date().isoformat()
-
-    if payout_count == 0:
-        history_html = '<p class="ah-muted" style="margin:0;">No payouts yet</p>'
-    else:
-        rows_html = ""
-        for row in batch_rows:
-            row_date = (
-                row.period_end_at.date().isoformat()
-                if row.period_end_at is not None
-                else "—"
-            )
-            amt = round(float(row.amount_cents) / 100.0, 2)
-            st = _payout_status_display(row.ui_status)
-            n_u = row.distinct_users
-            uid = f"{n_u} users" if n_u else "—"
-            rows_html += f"""
-            <tr>
-                <td>{row_date}</td>
-                <td>{amt} €</td>
-                <td>{st}</td>
-                <td class="ah-muted" style="font-size:0.85rem;">{uid}</td>
-            </tr>
-            """
-        history_html = f"""
-        <table class="ah-table">
-            <thead>
-                <tr>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Status</th>
-                    <th class="ah-muted">Users</th>
-                </tr>
-            </thead>
-            <tbody>{rows_html}</tbody>
-        </table>
-        """
-
-    method_banner = _artist_payout_method_banner(artist)
-    m_sel = (artist.payout_method or "none").strip().lower()
-    if m_sel not in ALLOWED_PAYOUT_METHODS:
-        m_sel = "none"
-    sel_none = "selected" if m_sel == "none" else ""
-    sel_crypto = "selected" if m_sel == "crypto" else ""
-    sel_bank = "selected" if m_sel == "bank" else ""
-    w_attr = _html_escape(artist.payout_wallet_address or "")
-    b_attr = _html_escape(artist.payout_bank_info or "")
-
-    config_section = f"""
-        <section class="ah-card ah-card--payout">
-            <h2>Payout method (for future use)</h2>
-            <div style="margin-bottom:1.25rem;">
-                {method_banner}
-            </div>
-            <h3 style="margin-top:0; font-size:1rem;">Update settings</h3>
-            <form method="post" action="/artist/{artist_id}/payout-method" style="max-width:32rem;">
-                <p style="margin-bottom:10px;">
-                    <label for="payout_method"><b>Payout method</b></label><br/>
-                    <select name="payout_method" id="payout_method" style="margin-top:6px; min-width:200px;">
-                        <option value="none" {sel_none}>None</option>
-                        <option value="crypto" {sel_crypto}>Crypto (Algorand)</option>
-                        <option value="bank" {sel_bank}>Bank transfer</option>
-                    </select>
-                </p>
-                <p style="margin-bottom:10px;">
-                    <label for="payout_wallet_address"><b>Wallet address</b> (crypto)</label><br/>
-                    <input type="text" name="payout_wallet_address" id="payout_wallet_address" maxlength="{MAX_PAYOUT_TEXT_LEN}" value="{w_attr}" style="width:100%; max-width:30rem; margin-top:6px; box-sizing:border-box;" />
-                </p>
-                <p style="margin-bottom:10px;">
-                    <label for="payout_bank_info"><b>Bank details</b></label><br/>
-                    <textarea name="payout_bank_info" id="payout_bank_info" maxlength="{MAX_PAYOUT_TEXT_LEN}" rows="3" style="width:100%; max-width:30rem; margin-top:6px; box-sizing:border-box;">{b_attr}</textarea>
-                </p>
-                <p class="ah-form-actions">
-                    <button type="submit" class="ah-btn">Save payout method</button>
-                </p>
-            </form>
-            <p class="ah-muted" style="margin-top:16px; margin-bottom:0; font-size:0.85rem;">
-                Saving does not move funds.
-            </p>
-        </section>
-    """
-
-    html = f"""
-    {_artist_hub_html_head(f"Artist {artist_id} — Payouts")}
-    <body class="artist-hub">
-    <div class="artist-hub-inner">
-        <h1>Artist {artist_id} — Payouts</h1>
-        {_artist_hub_nav(artist_id, "payouts")}
-
-        {config_section}
-
-        <section class="ah-card ah-card--earnings">
-            <h2>Summary</h2>
-            <p><b>Paid (on-chain):</b> {round(total_paid, 2)} €</p>
-            <p><b>Accrued (not yet on-chain):</b> {round(total_accrued, 2)} €</p>
-            <p><b>Pending (batch calculating):</b> {round(total_pending, 2)} €</p>
-            <p><b>Number of batches:</b> {payout_count}</p>
-            <p><b>Last batch date (top row):</b> {last_payout_date}</p>
-            <p class="ah-lead" style="margin-top:12px;">
-                <b>Paid</b> requires <code>payout_settlements.execution_status = confirmed</code>.
-                <b>Accrued</b> is finalized/posted ledger without confirmed settlement.
-            </p>
-        </section>
-
-        <section class="ah-card ah-card--compare">
-            <h2>Payout history</h2>
-            <p class="ah-lead" style="margin-bottom:12px;">
-                One row per payout batch (amount is this artist&apos;s share in that batch). Read-only.
-            </p>
-            {history_html}
-        </section>
-    </div>
-    </body></html>
-    """
-
-    return html
+    """Legacy HTML payouts page removed; bookmarks hit Studio."""
+    return RedirectResponse(
+        url=f"{_next_app_base_url()}/studio/payouts",
+        status_code=302,
+    )
 
 
 @router.get("/artist-analytics/{artist_id}", response_class=HTMLResponse)

@@ -5,6 +5,7 @@
 - IMPLEMENTED
 - New frontend admin route `"/admin/payouts"` exists at `frontend/app/admin/payouts/page.tsx`.
 - Page consumes `GET /admin/payouts` via `fetchAdminPayouts(filters)` in `frontend/lib/api.ts`.
+- Transaction links: the frontend does **not** build explorer URLs. `"/admin/payouts"` uses only `row.tx.explorer_url` from `GET /admin/payouts` for links; when `explorer_url` is null but a tx id exists, the table shows a truncated id (tooltip + copy control) with no link. `frontend/lib/explorer.ts` was removed; studio payouts likewise use only API `explorer_url`.
 - MVP parity behaviors implemented:
   - filters: `status`, `artist_id`, `artist_name`, `limit`,
   - table columns: batch/users/artist/amount/status/wallet/tx/created/attempts/failure/actions,
@@ -98,6 +99,18 @@
   - payout/dashboard stats from `fetchStudioArtistDashboard()` (`GET /studio/{artist_id}/dashboard`)
   - insight story from `fetchArtistInsights()` (`GET /artist/{artist_id}/insights`)
 - `"/studio"` renders loading/error/no-artist states and real earnings fields (`total`, `paid`, `accrued`, `failed_settlement`, `pending`, `last_payouts`, `spotify_total`, `difference`).
+- `"/studio/payouts"` is implemented and data-backed:
+  - payload via `fetchStudioArtistPayouts()` (`GET /studio/{artist_id}/payouts`)
+  - renders payout method card (radio selection UI + editable wallet input + save action), summary, and payout history table.
+  - save flow calls `postStudioArtistPayoutMethod()` (`POST /artist/{artist_id}/payout-method`) with loading/success/error feedback and post-save refresh.
+  - wallet input is enabled only when `crypto` is selected; selecting `bank` disables wallet input.
+  - bank detail content is never rendered in UI; only `bank_configured` state is shown.
+  - summary copy clarifies payout lifecycle terminology:
+    - `Paid out to you`,
+    - `Generated, pending payout`,
+    - `Currently being processed` (shown only when pending amount > 0),
+    with short helper text to reduce confusion between generated vs transferred amounts.
+  - final UX polish includes refined wording (`Number of payments`, `Last payment date`), improved summary spacing, and payout history **Tx ID** (when provided): middle-truncated display (prefix/suffix via ellipsis, responsive to column width via `ResizeObserver`), native `title` tooltip with the full id, explorer link uses `explorer_url` from the API only (`target="_blank"`, no client-side URL construction), click on the link also copies the full id to the clipboard, plus a small inline copy control; em-dash when `tx_id` is missing (no tooltip/click); if `tx_id` is present but `explorer_url` is absent, the id is shown without a link (copy still works).
 - `"/studio/catalog"` is data-backed:
   - catalog/tracks via `fetchStudioCatalog()` (`GET /studio/{artist_id}/catalog`)
   - full release grid via `fetchStudioReleases()` (`GET /studio/{artist_id}/releases`)
@@ -153,13 +166,13 @@
   - bio section/edit button is placeholder UI text
 - Studio feature surface is partially complete:
   - dashboard, catalog, approvals are implemented
-  - analytics and payouts subpages are still placeholders
+  - analytics is still placeholder
+  - payouts is implemented and data-backed
 - Studio navigation includes both implemented and placeholder destinations in one menu.
 
 ## NOT IMPLEMENTED
 
 - `"/studio/analytics"` does not implement production analytics views yet; page is placeholder text only.
-- `"/studio/payouts"` does not implement production payout/settlement views yet; page is placeholder text only.
 - `"/studio/release/[id]/edit"` does not implement edit tooling yet; page is an entry placeholder.
 - `"/dashboard"` is not implemented in the App Router frontend.
 
@@ -168,13 +181,13 @@
 - Global auth interceptor does not attempt replay-specific handling for non-replayable request body streams; current app calls are JSON/FormData-oriented and unaffected.
 - Client-side guard can still briefly render loading placeholders during hydration/bootstrapping before redirect decisions complete.
 - Session-expired reason context can be absent on direct `/login` visits or manual URL edits (login gracefully falls back to standard sign-in UI).
-- Studio secondary navigation exposes placeholder routes (`/studio/analytics`, `/studio/payouts`) as first-class tabs.
+- Studio secondary navigation exposes a placeholder analytics route (`/studio/analytics`) as a first-class tab.
 - `"/studio"` dashboard suggests editable profile sections but edit actions are not wired to mutation flows.
 - Creator UX is split across modern studio routes and separate legacy-style creator pages (`/artist-analytics`, `/artist-catalog`, `/artist-upload`), which fragments the frontend surface.
 - Frontend guards are primarily authentication-focused; strict role/ownership enforcement is mainly backend-driven.
 
 ## ⚠️ SYSTEM INCONSISTENCIES
 
-- `"/studio"` root displays real insight and earnings data, while sibling tabs `"/studio/analytics"` and `"/studio/payouts"` are placeholders.
-- Navigation presents analytics/payouts as available studio modules even though their pages are not implemented.
+- `"/studio"` root and `"/studio/payouts"` are data-backed, while sibling `"/studio/analytics"` remains placeholder.
+- Navigation presents analytics as available even though the analytics page is not yet implemented.
 - Frontend contains both studio-era creator UX and legacy creator route surfaces, so there is no single consolidated creator frontend entrypoint.

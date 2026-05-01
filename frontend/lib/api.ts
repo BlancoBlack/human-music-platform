@@ -1083,6 +1083,48 @@ export type ArtistDashboardResponse = {
   payouts: ArtistDashboardPayoutRow[];
 };
 
+export type StudioPayoutSummary = {
+  paid_eur: number;
+  accrued_eur: number;
+  pending_eur: number;
+  failed_eur: number;
+  batch_count: number;
+  last_batch_date: string | null;
+};
+
+export type StudioPayoutHistoryRow = {
+  batch_id: string;
+  date: string;
+  amount_eur: number;
+  status: "paid" | "pending" | "failed";
+  users: number;
+  tx_id?: string | null;
+  explorer_url?: string | null;
+};
+
+export type StudioPayoutMethod = {
+  selected: "crypto" | "bank" | "none";
+  supports_onchain_settlement: boolean;
+  requires_manual_settlement: boolean;
+  wallet_address: string | null;
+  bank_configured: boolean;
+};
+
+export type StudioArtistPayoutsResponse = {
+  summary: StudioPayoutSummary;
+  history: StudioPayoutHistoryRow[];
+  payout_method: StudioPayoutMethod;
+};
+
+export type StudioPayoutMethodUpdateResponse = {
+  success: boolean;
+  payout_method: {
+    selected: "crypto" | "bank" | "none";
+    wallet_address: string | null;
+    bank_configured: boolean;
+  };
+};
+
 export async function fetchStudioArtistDashboard(
   artistId: number,
 ): Promise<ArtistDashboardResponse> {
@@ -1090,6 +1132,40 @@ export async function fetchStudioArtistDashboard(
   if (!res.ok) {
     const { detail } = await parseErrorPayload(res);
     throw new Error(detail || `Failed to load dashboard for artist ${artistId}`);
+  }
+  return res.json();
+}
+
+export async function fetchStudioArtistPayouts(
+  artistId: number,
+): Promise<StudioArtistPayoutsResponse> {
+  const res = await apiFetch(`/studio/${artistId}/payouts`);
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || `Failed to load payouts for artist ${artistId}`);
+  }
+  return res.json();
+}
+
+export async function postStudioArtistPayoutMethod(
+  artistId: number,
+  payload: {
+    payout_method: "crypto" | "bank" | "none";
+    payout_wallet_address?: string;
+    payout_bank_info?: string;
+  },
+): Promise<StudioPayoutMethodUpdateResponse> {
+  const body = new FormData();
+  body.append("payout_method", payload.payout_method);
+  body.append("payout_wallet_address", payload.payout_wallet_address ?? "");
+  body.append("payout_bank_info", payload.payout_bank_info ?? "");
+  const res = await apiFetch(`/artist/${artistId}/payout-method`, {
+    method: "POST",
+    body,
+  });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(detail || "Failed to update payout method");
   }
   return res.json();
 }

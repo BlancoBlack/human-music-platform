@@ -4,7 +4,7 @@ and optional ``payout_settlements`` (on-chain status).
 
 UI labels:
 - ``paid`` — settlement ``execution_status == confirmed`` (funds sent on-chain).
-- ``accrued`` — batch ``finalized`` / ``posted`` / ``failed`` but not yet confirmed on-chain.
+- ``accrued`` — batch ``finalized`` / ``posted`` but not yet confirmed/failed on-chain.
 - ``pending`` — batch ``calculating``.
 - ``processing`` — batch ``draft`` (pre-post) or batch ``processing`` (settlement/retry lock).
 - ``failed`` — settlement row exists with ``execution_status == failed``.
@@ -23,6 +23,10 @@ from app.models.artist import Artist
 from app.models.payout_batch import PayoutBatch
 from app.models.payout_line import PayoutLine
 from app.models.payout_settlement import PayoutSettlement
+from app.services.payout_aggregation_service import (
+    get_artist_payout_history_with_db,
+    get_artist_payout_summary_with_db,
+)
 
 
 def map_ledger_ui_status(
@@ -69,49 +73,10 @@ def artist_ledger_bucket_cents(db: Session, artist_id: int) -> Tuple[int, int, i
     paid = on-chain confirmed settlement; accrued = finalized/posted not confirmed;
     pending = batch calculating.
     """
-    paid = (
-        db.query(func.coalesce(func.sum(PayoutLine.amount_cents), 0))
-        .join(
-            PayoutSettlement,
-            and_(
-                PayoutSettlement.batch_id == PayoutLine.batch_id,
-                PayoutSettlement.artist_id == PayoutLine.artist_id,
-                PayoutSettlement.execution_status == "confirmed",
-            ),
-        )
-        .filter(PayoutLine.artist_id == int(artist_id))
-        .scalar()
-        or 0
-    )
-    accrued = (
-        db.query(func.coalesce(func.sum(PayoutLine.amount_cents), 0))
-        .join(PayoutBatch, PayoutBatch.id == PayoutLine.batch_id)
-        .outerjoin(
-            PayoutSettlement,
-            and_(
-                PayoutSettlement.batch_id == PayoutLine.batch_id,
-                PayoutSettlement.artist_id == PayoutLine.artist_id,
-            ),
-        )
-        .filter(PayoutLine.artist_id == int(artist_id))
-        .filter(PayoutBatch.status.in_(("finalized", "posted", "failed")))
-        .filter(
-            (PayoutSettlement.id.is_(None))
-            | (
-                PayoutSettlement.execution_status.notin_(("confirmed", "failed"))
-            )
-        )
-        .scalar()
-        or 0
-    )
-    pending = (
-        db.query(func.coalesce(func.sum(PayoutLine.amount_cents), 0))
-        .join(PayoutBatch, PayoutBatch.id == PayoutLine.batch_id)
-        .filter(PayoutLine.artist_id == int(artist_id))
-        .filter(PayoutBatch.status == "calculating")
-        .scalar()
-        or 0
-    )
+    summary = get_artist_payout_summary_with_db(db, int(artist_id))
+    paid = int(summary["paid_cents"])
+    accrued = int(summary["accrued_cents"])
+    pending = int(summary["pending_cents"])
     return int(paid), int(accrued), int(pending)
 
 
@@ -122,49 +87,17 @@ def artist_paid_pending_cents(db: Session, artist_id: int) -> Tuple[int, int]:
 
 
 def artist_batch_history(db: Session, artist_id: int) -> List[ArtistBatchPayoutRow]:
-    rows = (
-        db.query(
-            PayoutBatch.id,
-            PayoutBatch.period_end_at,
-            PayoutBatch.status,
-            func.coalesce(func.sum(PayoutLine.amount_cents), 0).label("cents"),
-            func.count(func.distinct(PayoutLine.user_id)).label("n_users"),
-        )
-        .join(PayoutBatch, PayoutBatch.id == PayoutLine.batch_id)
-        .filter(PayoutLine.artist_id == int(artist_id))
-        .group_by(
-            PayoutBatch.id,
-            PayoutBatch.period_end_at,
-            PayoutBatch.status,
-        )
-        .order_by(PayoutBatch.period_end_at.desc(), PayoutBatch.id.desc())
-        .all()
-    )
-    bids = [int(r[0]) for r in rows]
-    settlement_by_batch: dict[int, PayoutSettlement] = {}
-    if bids:
-        for s in (
-            db.query(PayoutSettlement)
-            .filter(
-                PayoutSettlement.artist_id == int(artist_id),
-                PayoutSettlement.batch_id.in_(bids),
-            )
-            .all()
-        ):
-            settlement_by_batch[int(s.batch_id)] = s
-
+    rows = get_artist_payout_history_with_db(db, int(artist_id))
     out: List[ArtistBatchPayoutRow] = []
-    for bid, pend_at, st, cents, n_users in rows:
-        ps = settlement_by_batch.get(int(bid))
-        ex = ps.execution_status if ps else None
-        ui = map_ledger_ui_status(str(st or ""), ex)
+    for row in rows:
+        ui = str(row["status"])
         out.append(
             ArtistBatchPayoutRow(
-                batch_id=int(bid),
-                period_end_at=pend_at,
-                batch_status=str(st or ""),
-                amount_cents=int(cents or 0),
-                distinct_users=int(n_users or 0),
+                batch_id=int(row["batch_id"]),
+                period_end_at=row["date"],
+                batch_status=str(row.get("batch_status") or ""),
+                amount_cents=int(row["amount_cents"] or 0),
+                distinct_users=int(row["distinct_users"] or 0),
                 ui_status=ui,
             )
         )
