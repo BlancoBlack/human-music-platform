@@ -3622,8 +3622,8 @@ def post_artist_payout_method(
     payout_method: str = Form(...),
     payout_wallet_address: str = Form(""),
     payout_bank_info: str = Form(""),
-    _owned_artist: Artist = Depends(require_artist_owner),
     _reject_impersonation: None = Depends(require_non_impersonation),
+    _owned_artist: Artist = Depends(require_artist_owner),
 ):
     raw_method = payout_method.strip().lower()
     if raw_method not in ALLOWED_PAYOUT_METHODS:
@@ -3763,8 +3763,8 @@ def get_admin_payouts(
 @router.post("/admin/settle-batch/{batch_id}")
 def post_admin_settle_batch(
     batch_id: int,
-    _admin_user: User = Depends(require_admin_user),
     _reject_impersonation: None = Depends(require_non_impersonation),
+    _admin_user: User = Depends(require_admin_user),
 ):
     """Run V2 on-chain settlement for all artists in a finalized/posted batch."""
     try:
@@ -3814,8 +3814,8 @@ def post_admin_retry_payout(
     artist_id: Optional[str] = Query(None),
     artist_name: Optional[str] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=500),
-    _admin_user: User = Depends(require_admin_user),
     _reject_impersonation: None = Depends(require_non_impersonation),
+    _admin_user: User = Depends(require_admin_user),
 ):
     raise HTTPException(
         status_code=501,
@@ -3829,8 +3829,8 @@ def post_admin_retry_payout(
 @router.post("/admin/retry-batch/{batch_id}")
 def post_admin_retry_batch(
     batch_id: int,
-    _admin_user: User = Depends(require_admin_user),
     _reject_impersonation: None = Depends(require_non_impersonation),
+    _admin_user: User = Depends(require_admin_user),
 ):
     """Retry only failed payout settlements in one batch."""
     try:
