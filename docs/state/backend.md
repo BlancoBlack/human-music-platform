@@ -131,10 +131,17 @@
 - Studio JSON endpoints are live and power the React `/studio` surfaces:
   - `GET /studio/me`,
   - `GET /studio/{artist_id}/dashboard`,
+  - `GET /studio/{artist_id}/analytics`,
   - `GET /studio/{artist_id}/payouts`,
   - `GET /studio/{artist_id}/catalog`,
   - `GET /studio/{artist_id}/releases`,
   - approvals endpoints under `/studio/releases/*`.
+- `GET /studio/{artist_id}/analytics` aggregates legacy-equivalent analytics in one JSON response (`backend/app/api/routes.py`):
+  - auth: `Depends(require_artist_owner)`,
+  - query: `range` (optional; defaults to `last_30_days` when omitted; same preset strings as `GET /artist/{artist_id}/streams` and related),
+  - invalid `range`: HTTP **400** with detail **`Invalid range`** (maps `ValueError` from `analytics_service` range resolution),
+  - source: `app/services/analytics_service.py` only — calls `get_artist_streams_over_time`, `get_artist_top_songs`, `get_artist_top_fans` (no duplicated SQL; no HTTP calls to other routes),
+  - response: `{ "range", "streams", "top_songs", "top_fans" }` where `streams` is the same object as the standalone streams endpoint, and `top_songs` / `top_fans` are the same arrays as their standalone endpoints (field-for-field).
 - `GET /studio/{artist_id}/payouts` is implemented as a thin read-only adapter in `backend/app/api/routes.py`:
   - auth: `Depends(require_artist_owner)`,
   - source of truth: `app/services/payout_aggregation_service.py` only,
@@ -157,9 +164,10 @@
   - requires wallet when `crypto`, requires bank payload when `bank`,
   - response is JSON `{ success: true, payout_method: { selected, wallet_address, bank_configured } }` without exposing bank detail content.
 - Legacy HTML dashboards remain active in `backend/app/api/routes.py`:
-  - `/artist-analytics/{artist_id}`,
   - `/artist-dashboard/{artist_id}`,
   - `/dashboard/{user_id}`.
+- **Creator analytics UI** is **Studio** (`GET /studio/{artist_id}/analytics` JSON + Next `/studio/analytics`). Legacy HTML analytics was removed.
+- `GET /artist-analytics/{artist_id}` is a **302 redirect** to Next Studio `/studio/analytics` (same `NEXT_APP_BASE_URL` as other hub links), gated by `Depends(require_artist_owner)` for bookmarks and old links.
 - `GET /artist-payouts/{artist_id}` is a **302 redirect** to Next Studio `/studio/payouts` (same `NEXT_APP_BASE_URL` as other hub links); the old HTML payouts page was removed. Payout data and method updates use `GET /studio/{artist_id}/payouts` and `POST /artist/{artist_id}/payout-method`.
 - Artist analytics APIs are implemented in `analytics_service.py` and include:
   - streams over time,
@@ -183,13 +191,13 @@
 
 ## PARTIALLY IMPLEMENTED
 
-- Dual-surface model (legacy HTML + new JSON/studio) is still in operation; duplication risk remains across analytics/payout presentation paths.
+- Dual-surface model (legacy HTML + new JSON/studio) is still in operation for some surfaces; duplication risk remains where legacy artist dashboard HTML and Studio overlap (not analytics: creator metrics UI is Studio-only; `GET /artist-analytics/...` redirects).
 - Frontend role-level UX expectations are ahead of backend route consolidation; enforcement is correct in key finance routes but product paths are not fully unified.
 
 ## NOT IMPLEMENTED
 
 - No single consolidated creator backend surface has replaced all legacy dashboard handlers yet.
-- No dedicated backend API specifically for `/studio/analytics` or `/studio/payouts` page contracts (those pages are placeholders in frontend).
+- Studio analytics: primary JSON is `GET /studio/{artist_id}/analytics` (see `docs/state/frontend.md` for the Next `/studio/analytics` client); scalability follow-ups are tracked in `docs/tech-debt/analytics.md`.
 
 ## KNOWN ISSUES
 

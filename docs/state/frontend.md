@@ -114,6 +114,13 @@
 - `"/studio/catalog"` is data-backed:
   - catalog/tracks via `fetchStudioCatalog()` (`GET /studio/{artist_id}/catalog`)
   - full release grid via `fetchStudioReleases()` (`GET /studio/{artist_id}/releases`)
+- `"/studio/analytics"` is implemented and data-backed:
+  - **Artist selector** at top: lists every artist from `fetchStudioMe().allowed_contexts.artists` (`GET /studio/me`); shown even when only one artist; initial selection prefers current artist context when present and allowed, otherwise first listed artist; changing the selection refetches analytics for that artist.
+  - loads a single payload via `fetchStudioArtistAnalytics()` (`GET /studio/{artist_id}/analytics?range=...`) only — no legacy `/artist-analytics` or per-metric `/artist/{id}/streams` calls
+  - range selector: `last_day`, `last_week`, `last_30_days` (default), `last_3_months`
+  - **Streams chart**: Recharts `LineChart` inside `ResponsiveContainer` (tooltips enabled); x = bucket label (`date` key), y = `streams`
+  - tables for top songs (title, streams, % of total over returned rows) and top fans (username, total streams, favorite song title + streams)
+  - loading, empty (per section), and error states; optional “Updating analytics…” while refetching
 - `"/studio/releases/[id]"` is data-backed and interactive:
   - detail via `fetchStudioReleaseDetail()` (`GET /studio/releases/{release_id}`)
   - actions via `postStudioReleaseApprove()` and `postStudioReleaseReject()`
@@ -165,14 +172,12 @@
   - profile image block is placeholder UI
   - bio section/edit button is placeholder UI text
 - Studio feature surface is partially complete:
-  - dashboard, catalog, approvals are implemented
-  - analytics is still placeholder
+  - dashboard, catalog, analytics, approvals are implemented
   - payouts is implemented and data-backed
-- Studio navigation includes both implemented and placeholder destinations in one menu.
+- Studio navigation is fully implemented for listed tabs; remaining gaps are route-specific (e.g. release edit placeholder).
 
 ## NOT IMPLEMENTED
 
-- `"/studio/analytics"` does not implement production analytics views yet; page is placeholder text only.
 - `"/studio/release/[id]/edit"` does not implement edit tooling yet; page is an entry placeholder.
 - `"/dashboard"` is not implemented in the App Router frontend.
 
@@ -181,9 +186,9 @@
 - Global auth interceptor does not attempt replay-specific handling for non-replayable request body streams; current app calls are JSON/FormData-oriented and unaffected.
 - Client-side guard can still briefly render loading placeholders during hydration/bootstrapping before redirect decisions complete.
 - Session-expired reason context can be absent on direct `/login` visits or manual URL edits (login gracefully falls back to standard sign-in UI).
-- Studio secondary navigation exposes a placeholder analytics route (`/studio/analytics`) as a first-class tab.
+- Studio secondary navigation includes a data-backed analytics route (`/studio/analytics`).
 - `"/studio"` dashboard suggests editable profile sections but edit actions are not wired to mutation flows.
-- Creator UX is split across modern studio routes and separate legacy-style creator pages (`/artist-analytics`, `/artist-catalog`, `/artist-upload`), which fragments the frontend surface.
+- Creator UX is split across modern studio routes and separate legacy-style creator pages (`/artist-catalog`, `/artist-upload`); `/artist-analytics` redirects to `/studio/analytics`.
 - Frontend guards are primarily authentication-focused; strict role/ownership enforcement is mainly backend-driven.
 
 ## ⚠️ SYSTEM INCONSISTENCIES

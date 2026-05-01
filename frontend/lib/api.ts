@@ -1049,6 +1049,49 @@ export async function fetchStudioMe(): Promise<StudioMeResponse> {
   return res.json();
 }
 
+export type StudioArtistAnalyticsTopSong = {
+  song_id: number;
+  title: string;
+  streams: number;
+};
+
+export type StudioArtistAnalyticsTopFanSong = {
+  song_id: number;
+  title: string;
+  streams: number;
+};
+
+export type StudioArtistAnalyticsTopFan = {
+  user_id: number;
+  username: string;
+  streams: number;
+  top_song: StudioArtistAnalyticsTopFanSong;
+};
+
+export type StudioArtistAnalyticsResponse = {
+  range: string;
+  streams: Record<string, number>;
+  top_songs: StudioArtistAnalyticsTopSong[];
+  top_fans: StudioArtistAnalyticsTopFan[];
+};
+
+export async function fetchStudioArtistAnalytics(
+  artistId: number,
+  range: string,
+): Promise<StudioArtistAnalyticsResponse> {
+  const params = new URLSearchParams({ range });
+  const res = await apiFetch(`/studio/${artistId}/analytics?${params}`);
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(
+      typeof detail === "string" && detail.trim()
+        ? detail
+        : `Failed to load analytics for artist ${artistId}`,
+    );
+  }
+  return res.json() as Promise<StudioArtistAnalyticsResponse>;
+}
+
 export type ArtistDashboardLastPayout = {
   batch_id: number;
   payout_date: string | null;

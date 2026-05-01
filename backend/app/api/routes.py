@@ -168,7 +168,7 @@ def _track_slug_href(slug: str) -> str:
     return f"{_next_app_base_url()}/track/{quote(slug)}"
 
 
-# Shared dark UI for artist HTML pages (dashboard / analytics / payouts).
+# Shared dark UI for artist HTML pages (dashboard / payouts).
 _ARTIST_HUB_CSS = """
 *, *::before, *::after { box-sizing: border-box; }
 body.artist-hub {
@@ -320,14 +320,6 @@ table.ah-table-fixed { table-layout: fixed; }
   border-color: #71717a;
 }
 .ah-form-actions { margin-bottom: 0; margin-top: 0.5rem; }
-.ah-fan-item {
-  margin-bottom: 0.75rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid #27272a;
-  border-radius: 0.5rem;
-  background: #141416;
-  color: #d4d4d8;
-}
 .ah-payout-row td:last-child { color: #a1a1aa; font-size: 0.8rem; }
 #heroInsight { display: none; }
 .ah-hero-title { margin-top: 0; }
@@ -335,10 +327,6 @@ table.ah-table-fixed { table-layout: fixed; }
 .ah-hero-sub { font-size: 0.9rem; color: #a1a1aa; margin-top: 0.75rem; margin-bottom: 0; }
 .ah-warn { color: #fbbf24; }
 .artist-hub b { color: #fafafa; font-weight: 600; }
-.artist-hub ol { color: #d4d4d8; }
-.artist-hub ol li { margin-bottom: 0.5rem; }
-.ah-chart-canvas { max-width: 100%; height: auto !important; }
-.ah-range-row { display: flex; gap: 0.65rem; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; }
 """
 
 
@@ -361,9 +349,10 @@ def _artist_hub_html_head(page_title: str, *, extra_head: str = "") -> str:
 def _artist_hub_nav(artist_id: int, active: str) -> str:
     """active: overview | analytics | payouts (payouts href is Next Studio; no legacy HTML page)."""
     studio_payouts = f"{_next_app_base_url()}/studio/payouts"
+    studio_analytics = f"{_next_app_base_url()}/studio/analytics"
     items: list[tuple[str, str, str]] = [
         ("overview", f"/artist-dashboard/{artist_id}", "Overview"),
-        ("analytics", f"/artist-analytics/{artist_id}", "Analytics"),
+        ("analytics", studio_analytics, "Analytics"),
         ("payouts", studio_payouts, "Payouts"),
         ("upload", _artist_upload_href(artist_id), "Upload"),
         ("catalog", _artist_catalog_href(artist_id), "Catalog"),
@@ -1591,6 +1580,27 @@ def get_studio_artist_dashboard(
     _owned_artist: Artist = Depends(require_artist_owner),
 ):
     return get_artist_dashboard(int(artist_id))
+
+
+@router.get("/studio/{artist_id}/analytics")
+def get_studio_artist_analytics(
+    artist_id: int,
+    range: str = Query("last_30_days", description="Time range preset"),
+    _owned_artist: Artist = Depends(require_artist_owner),
+):
+    aid = int(artist_id)
+    try:
+        streams = get_artist_streams_over_time(artist_id=aid, range=range)
+        top_songs = get_artist_top_songs(artist_id=aid, range=range)
+        top_fans = get_artist_top_fans(artist_id=aid, range=range)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid range")
+    return {
+        "range": range,
+        "streams": streams,
+        "top_songs": top_songs,
+        "top_fans": top_fans,
+    }
 
 
 @router.get("/studio/{artist_id}/payouts")
@@ -3860,213 +3870,13 @@ def redirect_artist_payouts_to_studio(
     )
 
 
-@router.get("/artist-analytics/{artist_id}", response_class=HTMLResponse)
-def artist_analytics(
+@router.get("/artist-analytics/{artist_id}")
+def redirect_artist_analytics_to_studio(
     artist_id: int,
     _owned_artist: Artist = Depends(require_artist_owner),
 ):
-    html = f"""
-    {_artist_hub_html_head(
-        f"Artist {artist_id} — Analytics",
-        extra_head='<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>',
-    )}
-    <body class="artist-hub">
-    <div class="artist-hub-inner">
-
-        <h1>Artist {artist_id} — Analytics</h1>
-        {_artist_hub_nav(artist_id, "analytics")}
-
-        <section class="ah-card">
-            <h2>📊 Streams</h2>
-            <div class="ah-range-row">
-                <label for="streamsRange"><b>Range:</b></label>
-                <select id="streamsRange">
-                    <option value="last_day">last_day</option>
-                    <option value="last_week">last_week</option>
-                    <option value="last_30_days" selected>last_30_days</option>
-                    <option value="last_3_months">last_3_months</option>
-                    <option value="last_6_months">last_6_months</option>
-                    <option value="last_12_months">last_12_months</option>
-                    <option value="last_2_years">last_2_years</option>
-                    <option value="last_5_years">last_5_years</option>
-                </select>
-            </div>
-            <div id="streamsEmpty" class="ah-muted" style="display:none; margin:8px 0 12px 0;">
-                Not enough data yet
-            </div>
-            <div id="streamsLoading" class="ah-muted" style="display:none; margin:8px 0 12px 0;">
-                Loading...
-            </div>
-            <canvas id="streamsChart" class="ah-chart-canvas"></canvas>
-        </section>
-
-        <section class="ah-card">
-            <h2>🎵 Top Songs (by streams)</h2>
-            <div id="topSongsEmpty" class="ah-muted" style="display:none; margin:8px 0 12px 0;">
-                Not enough data yet
-            </div>
-            <ol id="topSongsList" style="padding-left:22px; margin:0;"></ol>
-        </section>
-
-        <section class="ah-card">
-            <h2>👥 Top Fans</h2>
-            <div id="topFansEmpty" class="ah-muted" style="display:none; margin:8px 0 12px 0;">
-                Not enough data yet
-            </div>
-            <ol id="topFansList" style="padding-left:22px; margin:0; list-style-position: outside;"></ol>
-        </section>
-
-        <script>
-        let streamsChart = null;
-        const streamsRange = document.getElementById("streamsRange");
-        const streamsEmpty = document.getElementById("streamsEmpty");
-        const streamsLoading = document.getElementById("streamsLoading");
-        const streamsCanvas = document.getElementById("streamsChart");
-        const topSongsEmpty = document.getElementById("topSongsEmpty");
-        const topSongsList = document.getElementById("topSongsList");
-        const topFansEmpty = document.getElementById("topFansEmpty");
-        const topFansList = document.getElementById("topFansList");
-
-        function escapeHtml(s) {{
-            if (s === null || s === undefined) return "";
-            return String(s)
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;");
-        }}
-
-        async function loadStreams(rangeValue) {{
-            streamsLoading.style.display = "block";
-            streamsEmpty.style.display = "none";
-            try {{
-                const res = await fetch(`/artist/{artist_id}/streams?range=${{encodeURIComponent(rangeValue)}}`);
-                const data = await res.json();
-                const labels = Object.keys(data).sort();
-                const values = labels.map((k) => data[k]);
-
-                if (labels.length === 0) {{
-                    streamsEmpty.style.display = "block";
-                }} else {{
-                    streamsEmpty.style.display = "none";
-                }}
-
-                if (streamsChart) {{
-                    streamsChart.destroy();
-                }}
-
-                streamsChart = new Chart(streamsCanvas.getContext("2d"), {{
-                    type: "line",
-                    data: {{
-                        labels: labels,
-                        datasets: [{{
-                            label: "Streams",
-                            data: values,
-                            fill: false,
-                            tension: 0.1,
-                            borderColor: "#60a5fa",
-                            backgroundColor: "rgba(96, 165, 250, 0.12)",
-                            pointBackgroundColor: "#60a5fa",
-                            pointBorderColor: "#1e293b"
-                        }}]
-                    }},
-                    options: {{
-                        responsive: true,
-                        plugins: {{
-                            legend: {{
-                                labels: {{ color: "#a1a1aa" }}
-                            }}
-                        }},
-                        scales: {{
-                            x: {{
-                                ticks: {{ color: "#a1a1aa" }},
-                                grid: {{ color: "#27272a" }}
-                            }},
-                            y: {{
-                                beginAtZero: true,
-                                ticks: {{ color: "#a1a1aa", precision: 0 }},
-                                grid: {{ color: "#27272a" }}
-                            }}
-                        }}
-                    }}
-                }});
-            }} catch (e) {{
-                streamsEmpty.style.display = "block";
-                streamsEmpty.textContent = "Not enough data yet";
-                if (streamsChart) {{
-                    streamsChart.destroy();
-                    streamsChart = null;
-                }}
-            }} finally {{
-                streamsLoading.style.display = "none";
-            }}
-        }}
-
-        async function loadTopSongs(rangeValue) {{
-            topSongsEmpty.style.display = "none";
-            topSongsList.innerHTML = "";
-            try {{
-                const res = await fetch(`/artist/{artist_id}/top-songs?range=${{encodeURIComponent(rangeValue)}}`);
-                const rows = await res.json();
-                if (!Array.isArray(rows) || rows.length === 0) {{
-                    topSongsEmpty.style.display = "block";
-                    return;
-                }}
-
-                const totalStreams = rows.reduce((acc, row) => acc + Number(row.streams || 0), 0);
-                rows.forEach((row) => {{
-                    const streams = Number(row.streams || 0);
-                    const pct = totalStreams > 0 ? ((streams / totalStreams) * 100).toFixed(1) : "0.0";
-                    const li = document.createElement("li");
-                    li.style.marginBottom = "8px";
-                    li.textContent = `${{row.title}} — ${{streams}} streams (${{pct}}%)`;
-                    topSongsList.appendChild(li);
-                }});
-            }} catch (e) {{
-                topSongsEmpty.style.display = "block";
-            }}
-        }}
-
-        async function loadTopFans(rangeValue) {{
-            topFansEmpty.style.display = "none";
-            topFansList.innerHTML = "";
-            try {{
-                const res = await fetch(`/artist/{artist_id}/top-fans?range=${{encodeURIComponent(rangeValue)}}`);
-                const rows = await res.json();
-                if (!Array.isArray(rows) || rows.length === 0) {{
-                    topFansEmpty.style.display = "block";
-                    return;
-                }}
-
-                rows.forEach((row) => {{
-                    const streams = Number(row.streams || 0);
-                    const top = row.top_song || {{}};
-                    const songStreams = Number(top.streams || 0);
-                    const songTitle = top.title != null && top.title !== "" ? top.title : "—";
-                    const li = document.createElement("li");
-                    li.className = "ah-fan-item";
-                    li.innerHTML =
-                        "<strong>" + escapeHtml(row.username) + "</strong><br>" +
-                        streams + " streams<br>" +
-                        "Favorite: " + escapeHtml(songTitle) + " (" + songStreams + " streams)";
-                    topFansList.appendChild(li);
-                }});
-            }} catch (e) {{
-                topFansEmpty.style.display = "block";
-            }}
-        }}
-
-        streamsRange.addEventListener("change", (e) => {{
-            loadStreams(e.target.value);
-            loadTopSongs(e.target.value);
-            loadTopFans(e.target.value);
-        }});
-        loadStreams("last_30_days");
-        loadTopSongs("last_30_days");
-        loadTopFans("last_30_days");
-        </script>
-    </div>
-    </body></html>
-    """
-
-    return html
+    """Legacy HTML analytics removed; bookmarks hit Studio."""
+    return RedirectResponse(
+        url=f"{_next_app_base_url()}/studio/analytics",
+        status_code=302,
+    )

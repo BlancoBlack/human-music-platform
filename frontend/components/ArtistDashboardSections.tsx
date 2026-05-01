@@ -128,7 +128,7 @@ export function ArtistDashboardPage({ data }: { data: ArtistDashboardData }) {
         <a href={`/artist-dashboard/${data.artist_id}`}>
           <strong>Overview</strong>
         </a>{" "}
-        | <a href={`/artist-analytics/${data.artist_id}`}>Analytics</a> |{" "}
+        | <a href="/studio/analytics">Analytics</a> |{" "}
         <a href="/studio/payouts">Payouts</a> |{" "}
         <a href={`/artist-profile/${data.artist_id}`}>Profile</a>
       </nav>
