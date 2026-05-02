@@ -82,6 +82,10 @@ On Windows, use `.venv\Scripts\python.exe` instead of `./.venv/bin/python`.
 
 The Next.js app lives in **`frontend/`**. Install dependencies locally after cloning — the UI uses **[TanStack Query](https://tanstack.com/query)** (`@tanstack/react-query`) for likes (`GET /likes`, optimistic updates) and for loading playlists in the add-to-playlist modal (`GET /playlists`).
 
+The frontend uses **[@dnd-kit](https://dndkit.com/)** (**`@dnd-kit/core`**, **`@dnd-kit/sortable`**, and **`@dnd-kit/utilities`**) for playlist track drag-and-drop reordering on **`/library/playlists/[id]`**. Those dependencies are declared in **`frontend/package.json`** and are installed automatically with **`npm install`** or **`npm ci`** — no additional setup.
+
+After cloning, from the repo root:
+
 ```bash
 cd frontend
 npm install

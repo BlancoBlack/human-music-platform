@@ -26,6 +26,10 @@ The app wraps all pages in `AudioPlayerProvider` (see `components/AppProviders.t
 
 For auth cookies and CORS, run the Next dev server at **http://localhost:3000** and point `NEXT_PUBLIC_API_BASE` at **http://localhost:8000** (not `127.0.0.1`).
 
+### Drag & Drop (Playlists)
+
+Playlist tracks can be reordered with drag and drop on the playlist detail page (**`/library/playlists/[id]`**). Only the **playlist owner** sees the reorder handle. The UI uses **@dnd-kit** (core + sortable; handle-based interaction). Dependencies are installed with **`npm install`** in this directory — see the repo root **README** → **Frontend setup**.
+
 ### Dev-only impersonation (debugging)
 
 Backend must have **`APP_ENV=development`** (or `dev`) **and** **`ENABLE_DEV_IMPERSONATION=true`**. Log in as yourself, then from any client code (e.g. React DevTools on a component that uses `useAuth()`):
