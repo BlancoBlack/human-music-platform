@@ -30,6 +30,7 @@ from app.models.payout_batch import PayoutBatch
 from app.models.payout_input_snapshot import PayoutInputSnapshot
 from app.models.payout_line import PayoutLine
 from app.models.payout_settlement import PayoutSettlement
+from app.models.playlist import Playlist, PlaylistTrack
 from app.models.release import (
     RELEASE_APPROVAL_STATUS_DRAFT,
     RELEASE_STATE_DRAFT,
@@ -199,6 +200,8 @@ def reset_existing_data() -> None:
         db.query(GlobalListeningAggregate).delete(synchronize_session=False)
         db.query(ListeningEvent).delete(synchronize_session=False)
         db.query(ListeningSession).delete(synchronize_session=False)
+        db.query(PlaylistTrack).delete(synchronize_session=False)
+        db.query(Playlist).delete(synchronize_session=False)
         db.query(SongArtistSplit).delete(synchronize_session=False)
         db.query(SongFeaturedArtist).delete(synchronize_session=False)
         db.query(SongCreditEntry).delete(synchronize_session=False)

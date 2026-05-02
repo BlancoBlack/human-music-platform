@@ -32,7 +32,7 @@
 ### Production endpoints (`routes.py`)
 
 - **`POST /stream`**: authenticated listener (`get_listening_user_id`); body includes `song_id`, `duration` (> 0 required), optional `session_id`, `idempotency_key`, `correlation_id`. Delegates to `StreamService.process_stream`.
-- **`POST /stream/start-session`**: creates session via `process_start_listening_session` (user + `song_id`); rate-limited per user.
+- **`POST /stream/start-session`**: creates session via `process_start_listening_session` (user + `song_id`, optional discovery fields, optional `source_type` / `source_id`); rate-limited per user.
 - **`POST /stream/checkpoint`**: `process_stream_checkpoint` with `session_id`, `song_id`, `sequence`, `position_seconds`; separate rate limits from `/stream`.
 
 ### Minimum duration and “ignored” events
@@ -58,6 +58,13 @@ Applied **after** the 5s gate, before insert. Computes metadata only; stored on 
 ### Sessions and checkpoints
 
 - **`ListeningSession`**: can be created explicitly by start-session, or implicitly inside `process_stream` if no `session_id` passed (new session created).
+- **`source_type`** / **`source_id`**: new sessions always persist a **`source_type`** (`direct` when the client omits it on **`POST /stream/start-session`**, or when **`process_stream`** creates a session without an existing **`session_id`**). **`source_id`** is nullable. Allowed **`source_type`** values: `playlist`, `discovery`, `search`, `direct`. When **`source_id`** is sent on start-session, **`source_type`** must be set. Older rows may still have **`source_type` NULL** (no backfill).
+
+### Playback source context
+
+- **`process_stream`** implicit sessions (no existing `session_id`) default **`source_type="direct"`** and **`source_id`** NULL, matching omitted start-session attribution.
+- Stored on **`listening_sessions`** for analytics/product attribution; **`listening_events`** schema and ingest validation are unchanged.
+- **source context is NOT used in economics yet** — snapshot aggregation, **`snapshot_listening_inputs`**, and Ledger V2 **`payout_lines`** do not read these columns.
 - **`ListeningSessionCheckpoint`**: append-only progress; **does not** drive `validate_listen` or payouts (stated in `listening_checkpoint_service` module docstring).
 - **SQLite trigger** (startup patch in `main.py`): on insert into `listening_events` with `session_id`, updates `listening_sessions.finalized_at`.
 

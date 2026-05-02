@@ -28,6 +28,7 @@ from app.api.discovery_routes import (
     router as discovery_router,
 )
 from app.api.onboarding_routes import router as onboarding_router
+from app.api.playlist_routes import router as playlist_router
 from app.api.routes import router
 from app.core.database import Base, DB_PATH, SessionLocal, engine
 from app.core.sqlite_migration_utils import (
@@ -373,6 +374,16 @@ def _ensure_listening_session_hybrid_schema() -> None:
             conn.execute(
                 text("ALTER TABLE listening_sessions ADD COLUMN finalized_at DATETIME")
             )
+        if not _column_exists(conn, "listening_sessions", "source_type"):
+            logger.info("Applying missing column: listening_sessions.source_type")
+            conn.execute(
+                text("ALTER TABLE listening_sessions ADD COLUMN source_type VARCHAR(32)")
+            )
+        if not _column_exists(conn, "listening_sessions", "source_id"):
+            logger.info("Applying missing column: listening_sessions.source_id")
+            conn.execute(
+                text("ALTER TABLE listening_sessions ADD COLUMN source_id VARCHAR(128)")
+            )
         conn.execute(
             text(
                 """
@@ -598,6 +609,7 @@ def startup_init() -> None:
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(discovery_router, prefix="/discovery", tags=["discovery"])
 app.include_router(onboarding_router, prefix="/onboarding", tags=["onboarding"])
+app.include_router(playlist_router, prefix="/playlists", tags=["playlists"])
 app.include_router(router)
 
 _uploads_dir = Path("uploads")

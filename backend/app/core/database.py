@@ -120,6 +120,7 @@ from app.models import (
     payout_settlement,
     song_slug_history,
     admin_action_log,
+    playlist,
 )
 
 # Register model-level slug listeners for all insert paths.

@@ -16,6 +16,7 @@ from app.models.listening_event import ListeningEvent
 from app.models.listening_session import ListeningSession
 from app.models.song import Song
 from app.models.user import User
+from app.services.listening_checkpoint_service import DEFAULT_LISTENING_SESSION_SOURCE_TYPE
 from app.services.listening_validation import validate_listen
 from app.workers.listen_worker import process_listening_event
 
@@ -286,7 +287,11 @@ class StreamService:
         _acquire_ingestion_lock(db, user_id=user_id, song_id=song_id, correlation_id=cid)
 
         if session is None:
-            session = ListeningSession(user_id=user_id)
+            session = ListeningSession(
+                user_id=user_id,
+                source_type=DEFAULT_LISTENING_SESSION_SOURCE_TYPE,
+                source_id=None,
+            )
             db.add(session)
             db.flush()
 

@@ -18,4 +18,8 @@ class ListeningSession(Base):
     discovery_request_id = Column(String(64), nullable=True)
     discovery_section = Column(String(32), nullable=True)
     discovery_position = Column(Integer, nullable=True)
+    # Playback attribution. Not used by payout snapshots or validation.
+    # ORM default aligns with implicit /stream session creation (always set in services).
+    source_type = Column(String(32), nullable=True, default="direct")
+    source_id = Column(String(128), nullable=True)
 

@@ -211,6 +211,20 @@
 
 ## CURRENTLY IMPLEMENTED
 
+### Playlists (MVP)
+
+- Models: `playlists` (`Playlist`), `playlist_tracks` (`PlaylistTrack`) in `backend/app/models/playlist.py` — owner `owner_user_id` → `users.id`, soft delete via `deleted_at`, ordered tracks with `UNIQUE (playlist_id, position)` and `UNIQUE (playlist_id, song_id)`.
+- Service: `backend/app/services/playlist_service.py` — create, get (owner or `is_public`), `get_playlist_for_playback` (visibility + ordered `song_id`/`position` only), add/remove track (no duplicate songs; positions compacted on remove), reorder (two-phase position writes for SQLite UNIQUE safety).
+- API: router `backend/app/api/playlist_routes.py`, mounted at **`/playlists`** in `backend/app/main.py`. Mutations and full detail use `Depends(get_current_user)`.
+- Endpoints:
+  - `POST /playlists` — create (`title`, optional `description`, `is_public`),
+  - `GET /playlists/{playlist_id}` — detail + tracks (403 if private and not owner),
+  - `GET /playlists/{playlist_id}/play` — **playback-only** JSON: `{ "playlist": { id, title, owner_user_id, is_public }, "tracks": [{ song_id, position }, ...] }` (no media URLs, no joins beyond `playlist_tracks`). **Public:** optional auth (`get_optional_user`). **Private:** requires Bearer JWT as owner. Does not call streaming or discovery.
+  - `POST /playlists/{playlist_id}/tracks` — body `{ "song_id" }` (owner only),
+  - `DELETE /playlists/{playlist_id}/tracks/{song_id}` (owner only),
+  - `PUT /playlists/{playlist_id}/reorder` — body `{ "ordered_song_ids": [...] }` (owner only; must match current track set).
+- Not wired to discovery, streaming ingest, curator economics, or payouts.
+
 ### Core architecture
 
 - FastAPI app with modular routers in `backend/app/main.py` and `backend/app/api/routes.py`.

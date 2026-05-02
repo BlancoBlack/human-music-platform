@@ -38,6 +38,7 @@ This folder tracks **intentional deferrals** and **known gaps** from building th
 | [ux.md](./ux.md) | Surfaces around player, uploads, catalog, errors |
 | [search_scalability.md](./search_scalability.md) | **Deep dive:** artist search implementation, limits, options (Postgres/SQLite/external), upgrade triggers |
 | [auth-and-wallet.md](./auth-and-wallet.md) | **HIGH:** Current auth/wallet migration blockers and security debt (future architecture moved to `docs/future/auth-and-wallet-architecture.md`) |
+| [playlists.md](./playlists.md) | Playlists MVP gaps: discovery wiring, analytics attribution, economics/curator activation, hydrated playback, scaling |
 | [auth-system.md](./auth-system.md) | **Auth umbrella:** refresh families / reuse / logout-all, CSRF, email flows, DB email NOT NULL, legacy header removal, frontend session, JWT risks, production checklist |
 | [discovery-advanced-system.md](./discovery-advanced-system.md) | **Discovery debt:** current V1 limitations (future ranking blueprint moved to `docs/future/discovery-advanced-system.md`) |
 | [roles.md](./roles.md) | **Cross-domain onboarding/roles debt:** role duplication, route guard scope, onboarding-state constraints, resolver/redirect risks |

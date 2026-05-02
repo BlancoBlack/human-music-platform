@@ -1697,6 +1697,17 @@ class StartSessionRequest(BaseModel):
     discovery_request_id: str | None = None
     discovery_section: str | None = None
     discovery_position: int | None = None
+    source_type: str | None = Field(
+        default=None,
+        description=(
+            "Optional playback attribution: playlist | discovery | search | direct. "
+            "Omit for legacy clients."
+        ),
+    )
+    source_id: str | None = Field(
+        default=None,
+        description="Opaque id for the source (e.g. playlist id). Requires source_type when set.",
+    )
 
 
 class StreamEventRequest(BaseModel):
@@ -2978,6 +2989,8 @@ def stream_start_session(
             if payload.discovery_position is not None
             else None
         ),
+        source_type=payload.source_type,
+        source_id=payload.source_id,
     )
 
 

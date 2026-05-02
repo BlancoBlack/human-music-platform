@@ -18,6 +18,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.inspection import inspect
 from sqlalchemy.orm import Session
 
+# Allowed POST /stream/start-session source_type values (persisted on ListeningSession).
+ALLOWED_LISTENING_SESSION_SOURCE_TYPES = frozenset(
+    ("playlist", "discovery", "search", "direct")
+)
+DEFAULT_LISTENING_SESSION_SOURCE_TYPE = "direct"
+_MAX_SOURCE_ID_LEN = 128
+
 from app.models.listening_event import ListeningEvent
 from app.models.listening_session import ListeningSession
 from app.models.listening_session_checkpoint import ListeningSessionCheckpoint
@@ -36,6 +43,20 @@ def _checkpoint_idle_timedelta() -> timedelta:
     return timedelta(minutes=max(1, min(minutes, 24 * 60)))
 
 
+def _normalize_optional_source(
+    *,
+    source_type: str | None,
+    source_id: str | None,
+) -> tuple[str | None, str | None]:
+    st = str(source_type).strip() if source_type is not None else None
+    if st == "":
+        st = None
+    sid = str(source_id).strip() if source_id is not None else None
+    if sid == "":
+        sid = None
+    return st, sid
+
+
 def process_start_listening_session(
     db: Session,
     *,
@@ -44,8 +65,36 @@ def process_start_listening_session(
     discovery_request_id: str | None = None,
     discovery_section: str | None = None,
     discovery_position: int | None = None,
+    source_type: str | None = None,
+    source_id: str | None = None,
 ) -> Dict[str, Any]:
     """Create a listening session bound to one song (hybrid player)."""
+    norm_type, norm_id = _normalize_optional_source(
+        source_type=source_type, source_id=source_id
+    )
+    if norm_id is not None and norm_type is None:
+        raise HTTPException(
+            status_code=400,
+            detail="source_id requires source_type",
+        )
+    if norm_type is not None and norm_type not in ALLOWED_LISTENING_SESSION_SOURCE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid source_type; allowed: "
+                + ", ".join(sorted(ALLOWED_LISTENING_SESSION_SOURCE_TYPES))
+            ),
+        )
+    if norm_id is not None and len(norm_id) > _MAX_SOURCE_ID_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"source_id must be at most {_MAX_SOURCE_ID_LEN} characters",
+        )
+
+    if norm_type is None:
+        norm_type = DEFAULT_LISTENING_SESSION_SOURCE_TYPE
+        norm_id = None
+
     if (
         db.query(Song.id)
         .filter(Song.id == song_id, Song.deleted_at.is_(None))
@@ -62,6 +111,8 @@ def process_start_listening_session(
         discovery_request_id=discovery_request_id,
         discovery_section=discovery_section,
         discovery_position=discovery_position,
+        source_type=norm_type,
+        source_id=norm_id,
     )
     db.add(session)
     logger.info(
@@ -72,6 +123,8 @@ def process_start_listening_session(
             "discovery_request_id": discovery_request_id,
             "discovery_section": discovery_section,
             "discovery_position": discovery_position,
+            "source_type": norm_type,
+            "source_id": norm_id,
         },
     )
     try:
@@ -85,6 +138,8 @@ def process_start_listening_session(
                 "discovery_request_id": discovery_request_id,
                 "discovery_section": discovery_section,
                 "discovery_position": discovery_position,
+                "source_type": norm_type,
+                "source_id": norm_id,
             },
         )
 
@@ -106,6 +161,8 @@ def process_start_listening_session(
                 "discovery_request_id": discovery_request_id,
                 "discovery_section": discovery_section,
                 "discovery_position": discovery_position,
+                "source_type": norm_type,
+                "source_id": norm_id,
             },
         )
         raise
@@ -118,6 +175,8 @@ def process_start_listening_session(
             "discovery_request_id": discovery_request_id,
             "discovery_section": discovery_section,
             "discovery_position": discovery_position,
+            "source_type": norm_type,
+            "source_id": norm_id,
         },
     )
     return {"session_id": session.id}
