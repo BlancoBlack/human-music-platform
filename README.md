@@ -78,6 +78,20 @@ npm run dev
 
 On Windows, use `.venv\Scripts\python.exe` instead of `./.venv/bin/python`.
 
+### Frontend setup
+
+The Next.js app lives in **`frontend/`**. Install dependencies locally after cloning — the UI uses **[TanStack Query](https://tanstack.com/query)** (`@tanstack/react-query`) for likes (`GET /likes`, optimistic updates) and for loading playlists in the add-to-playlist modal (`GET /playlists`).
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Configure **`frontend/.env.local`** with `NEXT_PUBLIC_API_BASE=http://localhost:8000` (see **Quickstart** §5). Use **`localhost`** (not `127.0.0.1`) so cookies and CORS match the API.
+
+For reproducible installs in CI or when the lockfile is your source of truth, prefer **`npm ci`** (as in **Quickstart** §5) instead of **`npm install`**.
+
 ### Running tests
 
 Backend tests live under **`backend/tests/`**. Install backend dependencies from **`backend/requirements.txt`** before running **`pytest`**.
