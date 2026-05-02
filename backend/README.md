@@ -35,7 +35,10 @@ uvicorn app.main:app --reload
 
 ### Run tests
 
+Install **`requirements.txt`** first (**`httpx`** is required for **`TestClient`** HTTP tests, e.g. **`test_playlist_http.py`**, **`test_playlist_playback_http.py`**).
+
 ```bash
+pip install -r requirements.txt
 pytest
 ```
 

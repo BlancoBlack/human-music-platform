@@ -73,6 +73,20 @@ npm run dev
 
 On Windows, use `.venv\Scripts\python.exe` instead of `./.venv/bin/python`.
 
+### Running tests
+
+Backend tests live under **`backend/tests/`**. Install backend dependencies from **`backend/requirements.txt`** before running **`pytest`**.
+
+**`httpx`** is listed there explicitly: FastAPI’s **`TestClient`** (Starlette) depends on it, so HTTP integration tests such as **`test_playlist_http.py`** and **`test_playlist_playback_http.py`** import cleanly and are not skipped.
+
+```bash
+cd backend
+pip install -r requirements.txt
+pytest
+```
+
+Prefer the same **`backend/.venv`** interpreter as in **Quickstart** (e.g. `./.venv/bin/python -m pip install -r requirements.txt` then `./.venv/bin/python -m pytest`).
+
 ## Requisites
 
 ### 1. System requirements
