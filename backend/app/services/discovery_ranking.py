@@ -1,30 +1,43 @@
 """
-Discovery ranking: candidate universe (Step 2a) + pure scoring (Step 2b).
+Discovery ranking: candidate universe (Step 2a) + scoring (Step 2b).
 
-Scoring uses only in-memory dicts/lists — no database access.
+Scoring is CPU-only given preloaded maps (popularity, relevance, playlist counts, etc.).
+``build_candidate_set`` batches DB reads including playlist membership counts.
+``finalize_discovery_ranking`` may read playlists again when ``db`` is passed (curated rail).
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
 import random
-from datetime import datetime
+from datetime import date, datetime, timezone
 
 # Pipeline contract:
 # build_candidate_set -> score_candidates -> finalize_discovery_ranking -> compose_discovery_sections
 #
 # All steps must operate on the SAME candidate universe.
 
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.models.global_listening_aggregate import GlobalListeningAggregate
 from app.models.listening_aggregate import ListeningAggregate
+from app.models.playlist import Playlist, PlaylistTrack
+from app.models.release import Release
 from app.models.song import Song
+from app.models.song_media_asset import (
+    SONG_MEDIA_KIND_MASTER_AUDIO,
+    SongMediaAsset,
+)
 from app.services.discovery_candidate_pools import (
+    _song_discoverable_sql,
+    _utc_now_naive,
     get_discovery_visibility_stats,
     get_low_exposure_candidates,
+    get_playlist_candidates,
     get_popular_candidates,
     get_user_candidates,
 )
@@ -41,11 +54,14 @@ _WEIGHT_AUTH_POP = 0.20
 _WEIGHT_ANON_DISC = 0.60
 _WEIGHT_ANON_POP = 0.40
 
+# Weak boost from playlist breadth: log1p(public playlist count per song). Not used in payouts.
+_PLAYLIST_POPULARITY_ALPHA = 0.05
+
 # When all candidates share the same global duration in-window, min–max is undefined.
 _FLAT_POP_DISC = 0.5
 
-# Editorial allowlist: intersected with ``candidate_ids`` at finalize time; order preserved.
-# Extend with real ``song_id`` values when editorial picks exist (must be playable candidates).
+# Fallback curated allowlist when ``finalize_discovery_ranking`` is called **without** ``db``.
+# Production paths pass ``db`` and derive curated ids from public playlists instead.
 DISCOVERY_CURATED_SONG_IDS: list[int] = []
 
 _MAX_SECTION_PLAY_NOW = 10
@@ -141,6 +157,28 @@ def load_song_metadata(
     return artist_by_song, days_since_release
 
 
+def load_playlist_membership_counts(db: Session, candidate_ids: list[int]) -> dict[int, int]:
+    """
+    For each candidate song_id: number of **public**, non-deleted playlists that include it.
+
+    One batched query (``GROUP BY song_id``). Songs absent from the result have count **0**.
+    """
+    if not candidate_ids:
+        return {}
+    rows = (
+        db.query(PlaylistTrack.song_id, func.count(PlaylistTrack.playlist_id))
+        .join(Playlist, Playlist.id == PlaylistTrack.playlist_id)
+        .filter(
+            Playlist.deleted_at.is_(None),
+            Playlist.is_public.is_(True),
+            PlaylistTrack.song_id.in_(candidate_ids),
+        )
+        .group_by(PlaylistTrack.song_id)
+        .all()
+    )
+    return {int(sid): int(n) for sid, n in rows}
+
+
 def load_user_listened_artists(db: Session, user_id: int | None) -> set[int]:
     """
     Return artist ids listened by user from ListeningAggregate (>0 duration), else empty.
@@ -166,7 +204,8 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
     """
     Deterministic candidate list (≤500) plus aggregate maps for downstream scoring.
 
-    Merge order: popular → user → low_exposure; first occurrence wins; then cap.
+    Merge order: popular → user → playlist → low_exposure (after reserved low-exposure
+    prefix); first occurrence wins; then cap.
 
     Returns:
         ``candidate_ids``: ordered list
@@ -180,6 +219,7 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
     """
     popular = get_popular_candidates(db)
     user_pool = get_user_candidates(db, user_id)
+    playlist_pool = get_playlist_candidates(db, user_id)
     low_exposure = get_low_exposure_candidates(db)
     visibility_stats = get_discovery_visibility_stats(db)
     logger.info(
@@ -196,6 +236,7 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
 
     seen: set[int] = set()
     candidate_ids: list[int] = []
+    candidate_pool_by_song: dict[int, str] = {}
     low_exposure_min = int(math.ceil(_MAX_CANDIDATES * _LOW_EXPOSURE_CANDIDATE_MIN_SHARE))
 
     # Reserve a floor of low-exposure candidates before broad merge/fill.
@@ -208,23 +249,22 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
         if len(candidate_ids) >= low_exposure_min or len(candidate_ids) >= _MAX_CANDIDATES:
             break
 
-    candidate_pool_by_song: dict[int, str] = {}
-    for sid in (*popular, *user_pool, *low_exposure):
-        i = int(sid)
-        if i in seen:
-            continue
-        seen.add(i)
-        candidate_ids.append(i)
-        if i in low_exposure_set:
-            candidate_pool_by_song[i] = "low_exposure"
-        elif i in user_set:
-            candidate_pool_by_song[i] = "user"
-        elif i in popular_set:
-            candidate_pool_by_song[i] = "popular"
-        else:
-            candidate_pool_by_song[i] = "unknown"
-        if len(candidate_ids) >= _MAX_CANDIDATES:
-            break
+    # Label by first introducing stream (dedupe: skip if already seen — same as before).
+    def _append_from_stream(stream_ids: list[int], pool_label: str) -> None:
+        for sid in stream_ids:
+            if len(candidate_ids) >= _MAX_CANDIDATES:
+                return
+            i = int(sid)
+            if i in seen:
+                continue
+            seen.add(i)
+            candidate_ids.append(i)
+            candidate_pool_by_song[i] = pool_label
+
+    _append_from_stream(popular, "popular")
+    _append_from_stream(user_pool, "user")
+    _append_from_stream(playlist_pool, "playlist")
+    _append_from_stream(low_exposure, "low_exposure")
 
     # Assign pool labels for the reserved low-exposure prefix as well.
     for sid in candidate_ids:
@@ -248,6 +288,7 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
         relevance = load_user_relevance(db, user_id, candidate_ids)
     artist_by_song, days_since_release = load_song_metadata(db, candidate_ids)
     user_listened_artists = load_user_listened_artists(db, user_id)
+    playlist_count_by_song = load_playlist_membership_counts(db, candidate_ids)
 
     return {
         "candidate_ids": candidate_ids,
@@ -258,6 +299,7 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
         "days_since_release": days_since_release,
         "user_listened_artists": user_listened_artists,
         "candidate_pool_by_song": candidate_pool_by_song,
+        "playlist_count_by_song": playlist_count_by_song,
     }
 
 
@@ -269,9 +311,17 @@ def score_candidates(
     days_since_release: dict[int, int],
     user_listened_artists: set[int],
     user_id: int | None,
+    *,
+    playlist_count_by_song: dict[int, int] | None = None,
 ) -> list[dict]:
     """
-    Compute discovery score features per candidate (pure Python, deterministic).
+    Compute discovery score features per candidate (deterministic given inputs).
+
+    Main ``score`` and ``for_you_score`` each gain the same small additive term
+    ``+ _PLAYLIST_POPULARITY_ALPHA * log1p(playlist_count)`` (``playlist_count`` =
+    public, non-deleted playlists containing the song; see ``load_playlist_membership_counts``).
+    Boosting ``for_you_score`` keeps finalize ordering aligned with the composite ``score``.
+    Omitted or missing ids imply count 0.
 
     Output order matches ``candidate_ids`` and includes section-specific scores:
     ``play_now_score``, ``for_you_score``, ``explore_score`` plus shared metadata
@@ -280,6 +330,8 @@ def score_candidates(
     # Prevents min/max errors on empty candidate set.
     if not candidate_ids:
         return []
+
+    counts = playlist_count_by_song or {}
 
     # Anti-viral normalization: always use log(1 + popularity) wherever popularity is scored.
     pops_raw = [float(popularity.get(int(sid), 0.0)) for sid in candidate_ids]
@@ -350,14 +402,17 @@ def score_candidates(
             0.55,
             min(1.0, 0.4 + (0.6 * quality_score)),
         )
-        score = float(base_score) * float(quality_penalty)
+        playlist_count = int(counts.get(song_id, 0))
+        playlist_signal = math.log1p(playlist_count)
+        playlist_boost = _PLAYLIST_POPULARITY_ALPHA * playlist_signal
+        score = float(base_score) * float(quality_penalty) + playlist_boost
 
         out.append(
             {
                 "song_id": song_id,
                 "score": float(score),
                 "play_now_score": float(play_now_score),
-                "for_you_score": float(for_you_score),
+                "for_you_score": float(for_you_score) + playlist_boost,
                 "explore_score": float(explore_score),
                 "explore_excluded": bool(explore_excluded),
                 "score_base": float(base_score),
@@ -372,6 +427,8 @@ def score_candidates(
                 "recency": float(recency_i),
                 "novelty": float(novelty_i),
                 "days_since_release": int(days),
+                "playlist_count": int(playlist_count),
+                "playlist_signal": float(playlist_signal),
             }
         )
 
@@ -386,6 +443,80 @@ def _final_sort_key(r: dict) -> tuple[float, float, float, int]:
         float(r.get("pop_log", 0.0)),
         int(r["song_id"]),
     )
+
+
+def _curated_daily_shuffle_seed(utc_date: date) -> int:
+    """Stable per UTC calendar day — used only for curated playlist shuffle."""
+    return int.from_bytes(
+        hashlib.sha256(utc_date.isoformat().encode("utf-8")).digest()[:8],
+        "big",
+    )
+
+
+def build_curated_ids_from_public_playlists(
+    db: Session,
+    candidate_ids: list[int],
+    *,
+    utc_date: date | None = None,
+) -> list[int]:
+    """
+    Curated rail: public playlists (``updated_at DESC``), max **2** playable tracks each,
+    playlist track order preserved while flattening. Keeps only ids in ``candidate_ids``,
+    dedupes by first occurrence in that flatten order, then **deterministic shuffle**
+    seeded by UTC date ``YYYY-MM-DD``, finally capped at ``_MAX_SECTION_CURATED``.
+
+    No writes. Stable for all requests on the same UTC day (same DB snapshot).
+    """
+    if utc_date is None:
+        utc_date = datetime.now(timezone.utc).date()
+
+    candidates = {int(c) for c in candidate_ids}
+    now = _utc_now_naive()
+
+    playlist_ids = [
+        int(r[0])
+        for r in (
+            db.query(Playlist.id)
+            .filter(
+                Playlist.deleted_at.is_(None),
+                Playlist.is_public.is_(True),
+            )
+            .order_by(desc(Playlist.updated_at), Playlist.id.asc())
+            .all()
+        )
+    ]
+
+    flattened: list[int] = []
+    seen_song: set[int] = set()
+    for pid in playlist_ids:
+        rows = (
+            db.query(PlaylistTrack.song_id)
+            .join(Song, Song.id == PlaylistTrack.song_id)
+            .outerjoin(Release, Release.id == Song.release_id)
+            .join(
+                SongMediaAsset,
+                (SongMediaAsset.song_id == Song.id)
+                & (SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO),
+            )
+            .filter(
+                PlaylistTrack.playlist_id == int(pid),
+                _song_discoverable_sql(now),
+            )
+            .order_by(PlaylistTrack.position.asc(), PlaylistTrack.id.asc())
+            .limit(2)
+            .all()
+        )
+        for (song_id,) in rows:
+            sid = int(song_id)
+            if sid not in candidates or sid in seen_song:
+                continue
+            seen_song.add(sid)
+            flattened.append(sid)
+
+    rng = random.Random(_curated_daily_shuffle_seed(utc_date))
+    shuffled = flattened[:]
+    rng.shuffle(shuffled)
+    return shuffled[:_MAX_SECTION_CURATED]
 
 
 def _dedupe_scored_items(scored: list[dict]) -> list[dict]:
@@ -408,19 +539,34 @@ def finalize_discovery_ranking(
     candidate_ids: list[int],
     artist_by_song: dict[int, int],
     *,
+    db: Session | None = None,
     curated_ids: list[int] | None = None,
+    curated_utc_date: date | None = None,
 ) -> dict:
     """
-    Sort scored rows, apply curated allowlist, return id lists only (no DB).
+    Sort scored rows, apply curated picks, return id lists only.
 
     Sort keys: ``score`` DESC, ``rel`` DESC, ``pop_raw`` ASC, ``song_id`` ASC.
 
-    ``curated_ids`` defaults to ``DISCOVERY_CURATED_SONG_IDS``; only ids present in
-    ``candidate_ids`` are kept, in allowlist order, without duplicates. At most
-    ``_MAX_SECTION_CURATED`` ids are returned (prefix of that filtered list).
-    Algorithmic ranked list excludes every curated id.
+    Curated source:
+    - If ``curated_ids`` is set, use it (tests / overrides).
+    - Else if ``db`` is set, build from **public playlists** via
+      ``build_curated_ids_from_public_playlists`` (daily seeded shuffle; see there).
+    - Else fall back to ``DISCOVERY_CURATED_SONG_IDS`` (typically empty).
+
+    Only ids present in ``candidate_ids`` are kept; duplicates dropped; at most
+    ``_MAX_SECTION_CURATED`` ids returned. Algorithmic ranked list excludes curated ids.
     """
-    allow = DISCOVERY_CURATED_SONG_IDS if curated_ids is None else curated_ids
+    if curated_ids is not None:
+        allow = curated_ids
+    elif db is not None:
+        allow = build_curated_ids_from_public_playlists(
+            db,
+            candidate_ids,
+            utc_date=curated_utc_date,
+        )
+    else:
+        allow = DISCOVERY_CURATED_SONG_IDS
     candidates = {int(c) for c in candidate_ids}
 
     seen_curated: set[int] = set()

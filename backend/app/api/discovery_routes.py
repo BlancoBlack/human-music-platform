@@ -201,11 +201,13 @@ def get_discovery_home(
         payload["days_since_release"],
         payload["user_listened_artists"],
         uid,
+        playlist_count_by_song=payload["playlist_count_by_song"],
     )
     final = finalize_discovery_ranking(
         scored,
         payload["candidate_ids"],
         payload["artist_by_song"],
+        db=db,
     )
     section_ids = compose_discovery_sections(
         final["ranked_candidate_ids"],
@@ -283,11 +285,13 @@ def post_discovery_first_session(
         payload["days_since_release"],
         payload["user_listened_artists"],
         uid,
+        playlist_count_by_song=payload["playlist_count_by_song"],
     )
     final = finalize_discovery_ranking(
         scored,
         payload["candidate_ids"],
         payload["artist_by_song"],
+        db=db,
     )
     section_ids = compose_discovery_sections(
         final["ranked_candidate_ids"],

@@ -9,6 +9,11 @@ Event-driven Web3 music streaming platform.
 - Blockchain: Algorand
 - Architecture: Event-driven
 
+### Requirements
+
+- Python **3.11+** (backend and tests; the codebase uses `datetime.UTC` and other 3.11+ APIs).
+- Install dependencies: `pip install -r requirements.txt` from the **`backend/`** directory (see **Quickstart**).
+
 ## How it works
 
 1. User triggers stream
@@ -110,10 +115,10 @@ Install via Docker (see above) or: [Redis download](https://redis.io/docs/latest
 
 ### 2. Python environment
 
-**Python 3.9+**  
-Use the same major.minor Python on every machine (e.g. MacBook and Mac Studio). There is no `pyproject.toml` pinning a version.
+**Python 3.11+**  
+Use the same major.minor Python on every machine (e.g. MacBook and Mac Studio). The backend pins **3.11** in `backend/.python-version` (for pyenv/asdf); there is no repo-root `pyproject.toml` or `runtime.txt`.
 
-Install: [python.org/downloads](https://www.python.org/downloads/) or `brew install python@3.12` (macOS)
+Install: [python.org/downloads](https://www.python.org/downloads/) or `brew install python@3.11` / `python@3.12` (macOS)
 
 #### Execution rule (backend)
 

@@ -5,28 +5,35 @@ Focus: Playlists surface shipped as MVP (models, CRUD, minimal playback, session
 
 ---
 
-## 1. DISCOVERY INTEGRATION (NOT IMPLEMENTED)
+## 1. DISCOVERY INTEGRATION (PARTIALLY IMPLEMENTED)
 
-**What is missing**
+**Current**
 
-- Playlists are not part of candidate generation (`discovery_candidate_pools`, `build_candidate_set`).
-- No playlist-derived ranking signals in `score_candidates` / section composition.
-- The curated discovery rail still relies on a **static** allowlist (`DISCOVERY_CURATED_SONG_IDS`), not database playlists.
+- **Candidate pool**: `get_playlist_candidates` feeds `build_candidate_set` — public playlists, `updated_at DESC`, up to **3** playable tracks per playlist (ordering + merge only; **no** extra scoring weight for the `playlist` **pool label** specifically).
+- **Weak scoring signal**: `load_playlist_membership_counts` + `score_candidates` — count of **public, non-deleted** playlists per song; **`0.05 * log1p(count)`** added to **`score`** and **`for_you_score`** (discovery-only; **no** payouts).
+- **Curated rail (MVP)**: `finalize_discovery_ranking` with `db` builds the curated section from public playlists (max **2** tracks per playlist, daily **deterministic** shuffle seed).
+
+**What is still missing**
+
+- **Rich playlist_stats** (materialized aggregates, recency-weighted inclusion, listen-weighted signals) — today counts are computed **on read** with one grouped query over `playlist_tracks` ⨝ `playlists`.
+- **Featured / verified** playlist semantics vs any public playlist.
+- **DB-backed curated snapshots** (immutable daily editorial), **curator roles** wired to discovery, and **advanced scoring** that weights curator or playlist metadata beyond the simple membership bump.
 
 **Why it matters**
 
-Without discovery wiring, playlists do not influence **reach**, **exploration**, or **editorial narrative** in-product — they are isolated catalog objects.
+Playlists now surface in discovery as **candidates** and **curated ordering**, but there is no durable editorial contract, attribution of “official” curators, or economic linkage.
 
-**Where it should integrate**
+**Where it should integrate later**
 
-- `backend/app/services/discovery_candidate_pools.py` — new pool(s) from featured or user-visible playlists (respect playable-universe filters).
-- `backend/app/services/discovery_ranking.py` — optional scoring inputs; replace or supplement `DISCOVERY_CURATED_SONG_IDS` with DB-driven playlist track lists.
+- `discovery_ranking.py` / dedicated snapshot tables — precomputed curated lists per day or campaign.
+- RBAC + admin flows — who may publish playlists that affect discovery rails beyond “public”.
+- Optional scoring hooks — only with product policy (see §4).
 
 **Future work**
 
-- Integrate playlists into `discovery_candidate_pools` with explicit eligibility rules (public only vs owner-context).
-- Define playlist-based scoring signals (recency, follower/listen proxies when those exist).
-- Replace `DISCOVERY_CURATED_SONG_IDS` with DB-driven playlists or editorial flags.
+- **Curated system v2**: DB-backed snapshots (audit trail, rollback), curator roles, campaigns, A/B or region flags.
+- **Advanced scoring**: bounded, documented signals from playlist engagement or curator reputation — never silent payout coupling without policy (see §3).
+- Eligibility rules beyond “public + not deleted” (e.g. minimum track count, verified curator only).
 
 ---
 
@@ -160,3 +167,90 @@ Discovery and fairness tuning eventually need **usage signals**; naive full-trac
 
 - Add composite / covering indexes if query plans show hotspots on `(playlist_id, position)` at scale beyond MVP volumes.
 - Track playlist usage (reads, unique listeners) via analytics pipeline — not on the hot payout path.
+
+---
+
+## 7. CURATED SOURCE DEPENDENCY (ARCHITECTURAL LIMITATION)
+
+**Current behavior**
+
+- Curated songs are derived from public playlists (see discovery finalize path).
+- They are **only included if present in** `candidate_ids` (intersection with the discovery candidate universe).
+
+**Implication**
+
+- Curated is **not** a primary discovery source on its own.
+- Strong playlist tracks that never enter the merged candidate pool are **never** shown in the curated rail.
+- Curated ordering and reach **depend on** candidate pool composition (popular / user / playlist pool merge, caps, dedupe).
+
+**Why it matters**
+
+- Breaks **editorial independence**: playlist-driven “picks” cannot outrank the candidate gate.
+- Limits **curator influence** relative to algorithmic pool construction.
+- **Couples** two layers that are conceptually separate: algorithmic selection vs editorial/playlist narrative.
+
+**Future solution**
+
+- Treat curated as a **primary source**: eligible playlist tracks should be able to surface **without** requiring membership in `candidate_ids`.
+- Reuse the same **discoverable / playable** filters as today, but resolve curated ids **directly** from playlists + those filters — not via the merged candidate list.
+- Preserve compatibility with **ranking** (e.g. curated ids still excluded from algorithmic ranked slots as today) and **section caps** (`_MAX_SECTION_CURATED` and composition rules).
+
+---
+
+## 8. PLAYLIST STATS & SIGNALS (DEFERRED)
+
+**Current**
+
+- Membership **count** per song (public, non-deleted playlists) is computed at request time inside `build_candidate_set` / `score_candidates` inputs — adequate for a **weak** boost, not a product analytics layer.
+
+**Future work**
+
+- **`playlist_stats` system**: durable rows or cache (playlist-level listen aggregates, follower counts, last-updated decay) feeding discovery **without** per-request full scans at scale.
+- **Batch aggregation**: offline or incremental jobs to maintain counts and recency-weighted metrics (e.g. exponential decay of inclusion importance).
+- **Recency-based signals**: weight tracks by how recently they were added to influential playlists; tie-breakers keyed off playlist `updated_at` or editorial campaigns — policy-gated and documented separately from MVP `log1p(count)`.
+
+---
+
+## 9. PLAYLIST TRIPLE INFLUENCE (COMPOUNDING BIAS)
+
+**Current behavior**
+
+Playlists touch discovery in **three** largely independent layers:
+
+1. **Candidate generation** — playlist candidate pool (`get_playlist_candidates` / merge into `build_candidate_set`).
+2. **Curated section** — playlist-derived curated rail (`build_curated_ids_from_public_playlists` / finalize).
+3. **Ranking** — `playlist_count` → `log1p` weak additive boost on `score` / `for_you_score`.
+
+**Implication**
+
+Tracks that appear in public playlists can accumulate **multiple advantages**:
+
+1. Higher chance to enter the **candidate set** (pool merge).
+2. **Curated** exposure (subject to intersection with candidates — see §7).
+3. Extra **ranking** score from playlist membership breadth.
+
+**Risks**
+
+- **Compounding bias** toward playlist-included songs vs never-playlisted tracks.
+- **Reduced diversity** if the same cohort dominates candidates, curated, and score ordering.
+- **Reinforcement loops** (“rich get richer”) as playlist activity correlates with surfacing.
+- **Weaker low-exposure guarantees** in practice if playlist-heavy tracks crowd out algorithmic exploration slots.
+
+**Why it matters**
+
+- Blurs the intended balance between **algorithmic discovery**, **exploration** (e.g. low-exposure paths), and **human / playlist curation**.
+- Can skew the system toward **early playlist activity** and public-playlist density rather than listening-quality or editorial intent alone.
+
+**Future mitigation options**
+
+- Decouple curated from `candidate_ids` (curated as **primary source** — aligns with §7).
+- **Cap** total playlist-driven influence per song across layers.
+- **Diminishing returns** when a track already benefits from another layer (e.g. score vs curated).
+- **Reduce or normalize** the ranking signal when the track is already in the curated set for that response.
+- Stronger **cross-source diversity** constraints in section composition.
+- Evolve from raw **counts** toward **curator trust** / verified editorial weighting (ties to §4 and §8).
+
+**Status**
+
+- **Accepted for MVP** — simple wiring, weak explicit score weight, bounded curated cap.
+- **Requires monitoring** as traffic and playlist volume grow (metrics on overlap: pool ∩ curated ∩ high `playlist_count`).

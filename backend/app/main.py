@@ -28,6 +28,7 @@ from app.api.discovery_routes import (
     router as discovery_router,
 )
 from app.api.onboarding_routes import router as onboarding_router
+from app.api.like_routes import router as like_router
 from app.api.playlist_routes import router as playlist_router
 from app.api.routes import router
 from app.core.database import Base, DB_PATH, SessionLocal, engine
@@ -610,6 +611,7 @@ app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(discovery_router, prefix="/discovery", tags=["discovery"])
 app.include_router(onboarding_router, prefix="/onboarding", tags=["onboarding"])
 app.include_router(playlist_router, prefix="/playlists", tags=["playlists"])
+app.include_router(like_router, tags=["likes"])
 app.include_router(router)
 
 _uploads_dir = Path("uploads")

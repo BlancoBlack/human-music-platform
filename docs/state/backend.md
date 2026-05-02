@@ -223,7 +223,14 @@
   - `POST /playlists/{playlist_id}/tracks` — body `{ "song_id" }` (owner only),
   - `DELETE /playlists/{playlist_id}/tracks/{song_id}` (owner only),
   - `PUT /playlists/{playlist_id}/reorder` — body `{ "ordered_song_ids": [...] }` (owner only; must match current track set).
-- Not wired to discovery, streaming ingest, curator economics, or payouts.
+- Playlists are **not** wired to streaming ingest, curator economics, or payouts; discovery uses playlists separately (candidate/curated/scoring — see `docs/state/discovery.md`), independent of user likes.
+
+### Likes (MVP)
+
+- Model: `like_events` (`LikeEvent`) in `backend/app/models/like_event.py` — `user_id` → `users.id`, `song_id` → `songs.id`, `created_at`, **`UNIQUE (user_id, song_id)`** (explicit preference, separate from manual playlist organization).
+- Service: `backend/app/services/like_service.py` — `like_song`, `unlike_song`, `get_or_create_liked_songs_playlist`. **Idempotent:** duplicate likes do not duplicate rows or playlist tracks; unlike removes the event and removes the track from the user’s private **“Liked Songs”** playlist when present.
+- **“Liked Songs” playlist:** title exactly `Liked Songs`, **`is_public = false`**, owned by the user; looked up only among **private** playlists with that title (non-deleted). Created automatically on first like if missing.
+- API: `backend/app/api/like_routes.py`, mounted **without prefix** in `backend/app/main.py` next to other routers — **`POST /like`** (JSON `{ "song_id" }`), **`DELETE /like?song_id=`** — both require **`get_current_user`** (Bearer JWT). **No** discovery, streaming, or payout side effects.
 
 ### Core architecture
 
