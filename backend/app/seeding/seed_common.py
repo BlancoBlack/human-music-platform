@@ -32,6 +32,7 @@ from app.models.payout_line import PayoutLine
 from app.models.payout_settlement import PayoutSettlement
 from app.models.like_event import LikeEvent  # noqa: F401 — register ORM / migrations parity
 from app.models.playlist import Playlist, PlaylistTrack
+from app.models.playlist_reorder_event import PlaylistReorderEvent  # noqa: F401 — register ORM / migrations parity
 from app.models.release import (
     RELEASE_APPROVAL_STATUS_DRAFT,
     RELEASE_STATE_DRAFT,

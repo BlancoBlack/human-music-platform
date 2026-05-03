@@ -11,13 +11,26 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.user import User
-from app.services.like_service import LikeValidationError, like_song, unlike_song
+from app.services.like_service import (
+    LikeValidationError,
+    get_user_liked_song_ids,
+    like_song,
+    unlike_song,
+)
 
 router = APIRouter(tags=["likes"])
 
 
 class LikeBody(BaseModel):
     song_id: int = Field(..., ge=1)
+
+
+@router.get("/likes")
+def get_likes(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+):
+    return {"song_ids": get_user_liked_song_ids(db, user_id=int(user.id))}
 
 
 @router.post("/like")

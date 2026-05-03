@@ -101,24 +101,26 @@ def _pick_master_assets(assets: list[SongMediaAsset]) -> dict[int, SongMediaAsse
     return masters
 
 
-def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int, dict], bool]:
+def _fetch_song_hydration_batch(
+    db: Session,
+    song_ids: list[int],
+) -> tuple[
+    dict[int, tuple[Song, str | None]],
+    dict[int, SongMediaAsset],
+    dict[int, str],
+]:
     """
-    Two queries (songs+artist, assets). ``hydrate_map`` keys follow ``union_ids`` order when filled.
+    Shared batched reads for discovery + playlist detail (no N+1).
 
-    Iterate ``for sid in union_ids`` when building the map — never DB row order.
-
-    Returns ``(hydrate_map, hydration_warnings_truncated)`` when warning logs were capped.
+    Cover raw paths match ``effective_song_cover`` semantics when ``Song.release_id``
+    references an existing release with ``ReleaseMediaAsset`` COVER_ART (same selection
+    rules as discovery; paths are turned into public URL paths via
+    ``public_media_url_from_stored_path`` downstream).
     """
-    ctx: dict[str, Any] = {"warn_count": 0, "warnings_truncated": False}
-    out: dict[int, dict] = {}
-
-    if not union_ids:
-        return out, False
-
     song_rows = (
         db.query(Song, Artist.name)
         .outerjoin(Artist, Song.artist_id == Artist.id)
-        .filter(Song.id.in_(union_ids), Song.deleted_at.is_(None))
+        .filter(Song.id.in_(song_ids), Song.deleted_at.is_(None))
         .all()
     )
     song_by_id: dict[int, tuple[Song, str | None]] = {}
@@ -128,7 +130,7 @@ def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int,
     asset_rows = (
         db.query(SongMediaAsset)
         .filter(
-            SongMediaAsset.song_id.in_(union_ids),
+            SongMediaAsset.song_id.in_(song_ids),
             SongMediaAsset.kind == SONG_MEDIA_KIND_MASTER_AUDIO,
         )
         .all()
@@ -161,6 +163,99 @@ def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int,
                 continue
             release_cover_map[rid] = path
 
+    return song_by_id, masters, release_cover_map
+
+
+def _hydrate_catalog_track_normalized(
+    sid: int,
+    song: Song,
+    artist_name: str | None,
+    masters: dict[int, SongMediaAsset],
+    release_cover_map: dict[int, str],
+    *,
+    warn_ctx: dict[str, Any] | None,
+) -> dict:
+    """Single-song hydration + ``normalize_discovery_track_row`` (discovery / playlists)."""
+    title_raw = song.title
+    title = str(title_raw).strip() if title_raw is not None else ""
+    if not title:
+        title = UNKNOWN_TRACK
+
+    an = (str(artist_name).strip() if artist_name is not None else "") or UNKNOWN_ARTIST
+
+    master = masters.get(sid)
+    release_cover_path = None
+    if song.release_id is not None:
+        release_cover_path = release_cover_map.get(int(song.release_id))
+    valid_master = _valid_master_audio(master)
+    upload_ready = str(song.upload_status or "") == "ready"
+    playable = bool(upload_ready and valid_master)
+
+    if upload_ready and not valid_master and warn_ctx is not None:
+        _warn(warn_ctx, "ready_without_valid_master", sid)
+
+    audio_raw = public_media_url_from_stored_path(master.file_path if master else None)
+    cover_raw = public_media_url_from_stored_path(release_cover_path)
+
+    row = {
+        "id": sid,
+        "title": title,
+        "artist_name": an,
+        "audio_url": audio_raw,
+        "cover_url": cover_raw,
+        "playable": playable,
+    }
+    return normalize_discovery_track_row(row)
+
+
+def hydrate_songs_batch_for_playlist(db: Session, song_ids: list[int]) -> dict[int, dict]:
+    """
+    Batch-hydrate songs for playlist detail responses.
+
+    Same playable / ``audio_url`` / ``cover_url`` rules as discovery home hydration
+    (via ``normalize_discovery_track_row``). Missing or soft-deleted songs yield a
+    normalized placeholder row (no discovery warning logs).
+    """
+    out: dict[int, dict] = {}
+    if not song_ids:
+        return out
+    unique_ids = list(dict.fromkeys(int(x) for x in song_ids))
+    song_by_id, masters, release_cover_map = _fetch_song_hydration_batch(db, unique_ids)
+
+    for sid in unique_ids:
+        tup = song_by_id.get(sid)
+        if tup is None:
+            out[sid] = normalize_discovery_track_row(dict(build_placeholder(sid)))
+            continue
+        song, an = tup
+        out[sid] = _hydrate_catalog_track_normalized(
+            sid,
+            song,
+            an,
+            masters,
+            release_cover_map,
+            warn_ctx=None,
+        )
+
+    return out
+
+
+def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int, dict], bool]:
+    """
+    Two queries (songs+artist, assets). ``hydrate_map`` keys follow ``union_ids`` order when filled.
+
+    Iterate ``for sid in union_ids`` when building the map — never DB row order.
+
+    Returns ``(hydrate_map, hydration_warnings_truncated)`` when warning logs were capped.
+    """
+    ctx: dict[str, Any] = {"warn_count": 0, "warnings_truncated": False}
+    out: dict[int, dict] = {}
+
+    if not union_ids:
+        return out, False
+
+    song_by_id, masters, release_cover_map = _fetch_song_hydration_batch(db, union_ids)
+
     for sid in union_ids:
         tup = song_by_id.get(sid)
         if tup is None:
@@ -169,37 +264,14 @@ def hydrate_discovery_rows(db: Session, union_ids: list[int]) -> tuple[dict[int,
             continue
 
         song, artist_name = tup
-        title_raw = song.title
-        title = str(title_raw).strip() if title_raw is not None else ""
-        if not title:
-            title = UNKNOWN_TRACK
-
-        an = (str(artist_name).strip() if artist_name is not None else "") or UNKNOWN_ARTIST
-
-        master = masters.get(sid)
-        release_cover_path = None
-        if song.release_id is not None:
-            release_cover_path = release_cover_map.get(int(song.release_id))
-        valid_master = _valid_master_audio(master)
-        upload_ready = str(song.upload_status or "") == "ready"
-        playable = bool(upload_ready and valid_master)
-
-        if upload_ready and not valid_master:
-            _warn(ctx, "ready_without_valid_master", sid)
-
-        # Never expose raw file_path — only public URL helper output.
-        audio_raw = public_media_url_from_stored_path(master.file_path if master else None)
-        cover_raw = public_media_url_from_stored_path(release_cover_path)
-
-        row = {
-            "id": sid,
-            "title": title,
-            "artist_name": an,
-            "audio_url": audio_raw,
-            "cover_url": cover_raw,
-            "playable": playable,
-        }
-        out[sid] = normalize_discovery_track_row(row)
+        out[sid] = _hydrate_catalog_track_normalized(
+            sid,
+            song,
+            artist_name,
+            masters,
+            release_cover_map,
+            warn_ctx=ctx,
+        )
 
     return out, bool(ctx.get("warnings_truncated"))
 

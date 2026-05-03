@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_optional_user
 from app.core.database import get_db
+from app.models.artist import Artist
 from app.models.discovery_event import DiscoveryEvent
 from app.models.song import Song
 from app.models.user_profile import UserProfile
@@ -29,6 +30,11 @@ from app.services.onboarding_state_service import (
     PREFERENCES_SET,
     advance_onboarding_state,
     validate_onboarding_state,
+)
+from app.services.admin_signal_snapshot import (
+    _empty_signal_snapshot,
+    batch_song_artist_labels,
+    build_admin_signal_snapshot,
 )
 from app.services.discovery_hydration import build_discovery_home_sections
 from app.services.discovery_ranking import (
@@ -169,6 +175,7 @@ def _empty_admin_analytics_payload() -> dict:
         "listen_per_impression_by_candidate_pool": [],
         "listen_per_impression_by_score_bucket": [],
         "valid_listen_per_click_by_section": [],
+        "signal_snapshot": _empty_signal_snapshot(),
     }
 
 
@@ -202,6 +209,8 @@ def get_discovery_home(
         payload["user_listened_artists"],
         uid,
         playlist_count_by_song=payload["playlist_count_by_song"],
+        reorder_signal_by_song=payload["reorder_signal_by_song"],
+        like_count_by_song=payload["like_count_by_song"],
     )
     final = finalize_discovery_ranking(
         scored,
@@ -286,6 +295,8 @@ def post_discovery_first_session(
         payload["user_listened_artists"],
         uid,
         playlist_count_by_song=payload["playlist_count_by_song"],
+        reorder_signal_by_song=payload["reorder_signal_by_song"],
+        like_count_by_song=payload["like_count_by_song"],
     )
     final = finalize_discovery_ranking(
         scored,
@@ -403,11 +414,14 @@ def post_discovery_event(
 def get_discovery_admin_analytics(
     db: Annotated[Session, Depends(get_db)],
 ):
+    signal_snapshot = build_admin_signal_snapshot(db)
     try:
         db.execute(text("SELECT 1 FROM discovery_events LIMIT 1"))
     except OperationalError:
         logger.warning("discovery_admin_analytics_missing_table")
-        return _empty_admin_analytics_payload()
+        payload = _empty_admin_analytics_payload()
+        payload["signal_snapshot"] = signal_snapshot
+        return payload
 
     distinct_key_expr = (
         "COALESCE(CAST(request_id AS TEXT), '') || '-' || COALESCE(CAST(song_id AS TEXT), '')"
@@ -1161,6 +1175,12 @@ def get_discovery_admin_analytics(
         if row["artist_id"] is not None
     ]
     top_artists_share = round(sum((float(r["share"]) for r in top_artists)), 6)
+    if top_artists:
+        _aids = [int(r["artist_id"]) for r in top_artists]
+        _arows = db.query(Artist.id, Artist.name).filter(Artist.id.in_(_aids)).all()
+        _aname = {int(a): str(n or "—") for a, n in _arows}
+        for r in top_artists:
+            r["artist_name"] = _aname.get(int(r["artist_id"]), "—")
 
     anomalies = [
         {
@@ -1173,6 +1193,14 @@ def get_discovery_admin_analytics(
         }
         for row in anomaly_rows
     ]
+    if anomalies:
+        _sids = [int(r["song_id"]) for r in anomalies]
+        _slab = batch_song_artist_labels(db, _sids)
+        for r in anomalies:
+            sid = int(r["song_id"])
+            st, an = _slab.get(sid, ("—", "—"))
+            r["song_title"] = st
+            r["artist_name"] = an
 
     diversity_per_request = {
         "avg_unique_artists": float(
@@ -1325,6 +1353,7 @@ def get_discovery_admin_analytics(
         "listen_per_impression_by_candidate_pool": listen_per_impression_by_candidate_pool,
         "listen_per_impression_by_score_bucket": listen_per_impression_by_score_bucket,
         "valid_listen_per_click_by_section": valid_listen_per_click_by_section,
+        "signal_snapshot": signal_snapshot,
     }
 
 

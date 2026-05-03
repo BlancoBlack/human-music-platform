@@ -121,6 +121,7 @@ from app.models import (
     song_slug_history,
     admin_action_log,
     playlist,
+    playlist_reorder_event,
 )
 
 # Register model-level slug listeners for all insert paths.

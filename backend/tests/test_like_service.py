@@ -13,7 +13,13 @@ from app.models.like_event import LikeEvent
 from app.models.playlist import Playlist, PlaylistTrack
 from app.models.song import SONG_STATE_DRAFT, Song
 from app.models.user import User
-from app.services.like_service import LIKED_SONGS_PLAYLIST_TITLE, LikeValidationError, like_song, unlike_song
+from app.services.like_service import (
+    LIKED_SONGS_PLAYLIST_TITLE,
+    LikeValidationError,
+    get_user_liked_song_ids,
+    like_song,
+    unlike_song,
+)
 
 
 @pytest.fixture()
@@ -45,6 +51,29 @@ def db_session() -> Session:
         yield db
     finally:
         db.close()
+
+
+def test_get_user_liked_song_ids_ordered(db_session: Session) -> None:
+    uid = int(db_session.query(User.id).scalar())
+    s1 = int(db_session.query(Song.id).filter_by(slug="like-song").scalar())
+    s2 = Song(
+        slug="like-song-2",
+        title="L2",
+        artist_id=int(db_session.query(Song.artist_id).filter_by(slug="like-song").scalar()),
+        upload_status="ready",
+        state=SONG_STATE_DRAFT,
+    )
+    db_session.add(s2)
+    db_session.commit()
+    s2id = int(s2.id)
+
+    like_song(db_session, user_id=uid, song_id=s1)
+    db_session.commit()
+    like_song(db_session, user_id=uid, song_id=s2id)
+    db_session.commit()
+
+    ids = get_user_liked_song_ids(db_session, user_id=uid)
+    assert ids == [s2id, s1]
 
 
 def test_like_idempotent_and_playlist_sync(db_session: Session) -> None:

@@ -14,32 +14,24 @@ python3 --version
 
 Project-wide quickstart (Redis, venv, API, worker, frontend) lives in the **[root README.md](../README.md)**. Work from this directory for Python commands.
 
+### Backend setup
 
-## Quickstart (Reproducible)
-
-Requires Python 3.11+
-
-### Setup
+Minimal reproducible install (from repository root):
 
 ```bash
-python -m venv venv
-source venv/bin/activate
+cd backend
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+pytest
 ```
 
-### Run server
+On Windows, activate with `.venv\Scripts\activate` instead of `source .venv/bin/activate`.
+
+Then run the API (still inside `backend/` with the venv active):
 
 ```bash
 uvicorn app.main:app --reload
-```
-
-### Run tests
-
-Install **`requirements.txt`** first (**`httpx`** is required for **`TestClient`** HTTP tests, e.g. **`test_playlist_http.py`**, **`test_playlist_playback_http.py`**).
-
-```bash
-pip install -r requirements.txt
-pytest
 ```
 
 ---

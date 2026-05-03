@@ -19,7 +19,9 @@ from app.services.playlist_service import (
     create_playlist,
     get_playlist,
     get_playlist_for_playback,
+    get_user_playlists,
     playlist_to_detail,
+    playlist_to_detail_enriched,
     remove_track_from_playlist,
     reorder_playlist_tracks,
 )
@@ -73,6 +75,15 @@ def post_playlist(
         raise _map_playlist_errors(exc) from exc
 
 
+@router.get("")
+def get_my_playlists(
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
+):
+    """Current user's playlists (metadata only; excludes soft-deleted)."""
+    return {"playlists": get_user_playlists(db, user_id=int(user.id))}
+
+
 @router.get("/{playlist_id}/play")
 def get_playlist_play(
     playlist_id: int,
@@ -100,7 +111,7 @@ def get_playlist_detail(
 ):
     try:
         pl = get_playlist(db, playlist_id=int(playlist_id), viewer_user_id=int(user.id))
-        return playlist_to_detail(pl)
+        return playlist_to_detail_enriched(db, pl)
     except (PlaylistNotFoundError, PlaylistForbiddenError) as exc:
         raise _map_playlist_errors(exc) from exc
 

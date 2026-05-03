@@ -2,6 +2,7 @@
 
 import type { MouseEvent } from "react";
 import { useAudioPlayer } from "@/components/audio/AudioPlayerProvider";
+import { SongActions } from "@/components/SongActions";
 
 export function GlobalPlayerBar() {
   const {
@@ -107,6 +108,7 @@ export function GlobalPlayerBar() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1 sm:gap-2 self-center">
+            <SongActions songId={currentTrack.id} />
             <button
               type="button"
               disabled={isBuffering || !canPrev}

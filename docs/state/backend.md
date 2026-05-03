@@ -10,6 +10,7 @@
 
 ### AUTH SYSTEM
 
+- User creation (`app/services/user_service.py` **`create_user`**) ends with **`get_or_create_liked_songs_playlist`** so each new **`User`** immediately owns an empty private **“Liked Songs”** playlist (idempotent; same helper as like sync).
 - Auth routes are mounted under `/auth` in `backend/app/main.py` via `app.include_router(auth_router, prefix="/auth", tags=["auth"])`.
 - `POST /auth/login` exists in `backend/app/api/auth_routes.py` and returns JSON `TokenResponse` with:
   - `access_token` (JWT bearer),
@@ -213,24 +214,32 @@
 
 ### Playlists (MVP)
 
-- Models: `playlists` (`Playlist`), `playlist_tracks` (`PlaylistTrack`) in `backend/app/models/playlist.py` — owner `owner_user_id` → `users.id`, soft delete via `deleted_at`, ordered tracks with `UNIQUE (playlist_id, position)` and `UNIQUE (playlist_id, song_id)`.
-- Service: `backend/app/services/playlist_service.py` — create, get (owner or `is_public`), `get_playlist_for_playback` (visibility + ordered `song_id`/`position` only), add/remove track (no duplicate songs; positions compacted on remove), reorder (two-phase position writes for SQLite UNIQUE safety).
+- Models: `playlists` (`Playlist`), `playlist_tracks` (`PlaylistTrack`) in `backend/app/models/playlist.py` — owner `owner_user_id` → `users.id`, soft delete via `deleted_at`, ordered tracks with `UNIQUE (playlist_id, position)` and `UNIQUE (playlist_id, song_id)`; **`playlist_reorder_events`** (`PlaylistReorderEvent`) — append-only rows when a user successfully reorders tracks (`user_id`, `playlist_id`, `song_id`, `old_position`, `new_position`, `delta_position`, **`playlist_updated_at`** UTC snapshot = playlist row’s `updated_at` **after** that reorder, `created_at`).
+- Service: `backend/app/services/playlist_service.py` — create, get (owner or `is_public`), `get_user_playlists` (owner summaries without tracks), `get_playlist_for_playback` (visibility + ordered `song_id`/`position` only), add/remove track (no duplicate songs; positions compacted on remove), reorder (two-phase position writes for SQLite UNIQUE safety).
 - API: router `backend/app/api/playlist_routes.py`, mounted at **`/playlists`** in `backend/app/main.py`. Mutations and full detail use `Depends(get_current_user)`.
 - Endpoints:
   - `POST /playlists` — create (`title`, optional `description`, `is_public`),
-  - `GET /playlists/{playlist_id}` — detail + tracks (403 if private and not owner),
+  - `GET /playlists` — **auth required**; returns `{ "playlists": [ { "id", "title", "is_public", "thumbnail_urls" }, ... ] }` for the current user only (soft-deleted playlists omitted; **no** `tracks`). **`thumbnail_urls`**: string array (0–4) of public cover paths from the **first four** tracks by **`position`** (same batched discovery hydration as **`GET /playlists/{id}`**; entries with no cover are omitted — empty playlist → **`[]`**). Ordering: **`title == "Liked Songs"`** rows first, then **`updated_at DESC`**, **`id ASC`**,
+  - `GET /playlists/{playlist_id}` — **enriched** detail (403 if private and not owner): playlist metadata plus **`cover_urls`** — public cover URL paths for the **first four** tracks ordered by **`position`** (each entry may be `null`); **`tracks`** entries include **`song_id`**, **`position`**, **`title`**, **`artist_name`**, **`cover_url`**, **`audio_url`** (same discovery-normalized relative `/…` URL rules and playability gating as `/discovery/home` hydration; batched queries via `discovery_hydration._fetch_song_hydration_batch` / `hydrate_songs_batch_for_playlist`, no N+1 per track),
   - `GET /playlists/{playlist_id}/play` — **playback-only** JSON: `{ "playlist": { id, title, owner_user_id, is_public }, "tracks": [{ song_id, position }, ...] }` (no media URLs, no joins beyond `playlist_tracks`). **Public:** optional auth (`get_optional_user`). **Private:** requires Bearer JWT as owner. Does not call streaming or discovery.
   - `POST /playlists/{playlist_id}/tracks` — body `{ "song_id" }` (owner only),
   - `DELETE /playlists/{playlist_id}/tracks/{song_id}` (owner only),
   - `PUT /playlists/{playlist_id}/reorder` — body `{ "ordered_song_ids": [...] }` (owner only; must match current track set).
 - Playlists are **not** wired to streaming ingest, curator economics, or payouts; discovery uses playlists separately (candidate/curated/scoring — see `docs/state/discovery.md`), independent of user likes.
 
+#### Playlist reorder signals
+
+- Successful **`PUT /playlists/{id}/reorder`** (valid payload, positions actually change) appends rows to **`playlist_reorder_events`** via **`reorder_playlist_tracks`**: **`_touch_playlist_updated_at`** + **`flush`** run **before** building insert mappings so **`playlist_updated_at`** reflects **post-reorder** playlist state; one row per moved track, **`delta_position = old_position - new_position`**, batch-inserted on the same DB session (no extra transaction boundaries in the service).
+- **Runtime aggregation (no stats table):** `backend/app/services/reorder_signal_service.py` — **`load_reorder_signal_by_song`**: last **14** days (`created_at` cutoff), **`playlist_reorder_events` ⨝ `playlists`** with **`playlists.deleted_at` IS NULL** and **`playlists.owner_user_id = events.user_id`**, filter **`delta_position > 0`**. Per-event contribution **`min(delta_position, 5)`** (portable SQL `CASE`, not `LEAST` for SQLite) **× 0.4** when **`playlists.is_public` is false** and **`playlists.title`** equals **`like_service.LIKED_SONGS_PLAYLIST_TITLE`**, else **× 1.0**; per-song **`SUM(...)`** then Python **`min(sum, 20)`** and **`log1p`**. Optional env **`HM_DEBUG_REORDER_SIGNAL`** (truthy): second grouped query + **`INFO`** log of top contributing **`playlist_id`** per song (logs only). Used from **`build_candidate_set`** alongside other preload maps.
+- **Discovery global like preload (no stats table):** `backend/app/services/discovery_ranking.py` — **`load_like_signal_by_song(db, song_ids, *, cutoff, mature_upper)`**: one batched query on **`like_events`** — **`WHERE song_id IN (...)`**, **`created_at >= cutoff`** (14d, **`LIKE_SIGNAL_WINDOW_DAYS`**), **`created_at <= mature_upper`** (default **`now − LIKE_MATURITY_MINUTES`**, **10** minutes — only **matured** likes count toward ranking). **`GROUP BY song_id`** → **`COUNT(*)`**. Composite index **`ix_like_events_song_created`** on **`(song_id, created_at)`** (Alembic **`0042_like_events_song_created_index`**) supports this filter pattern on Postgres and SQLite. Missing candidate ids ⇒ **0**. Schema **`UNIQUE (user_id, song_id)`** caps one row per user per song. Consumed as **`like_count_by_song`** from **`build_candidate_set`**; **`signal_aggregator.compute_signal_contributions`** uses **`log1p(effective_raw)`** with optional cap (**`LIKE_CAP`**, **`LIKE_CAP_ENABLED`**), **`LIKE_BOOST_ALPHA`**, and **`LIKE_PLAYLIST_CORRELATION_DAMP`** on **`like_boost`** when **`playlist_count > 0`** (see `docs/state/discovery.md`). **Tuning** (`LIKE_BOOST_ALPHA`, intent vs noise) is **deferred until sufficient telemetry** — see **TECH DEBT — Global like signal** in `docs/state/discovery.md`.
+- **No economic impact:** does not touch payouts, snapshot tables, or **`listening_events`**; discovery read path only (see `docs/state/discovery.md`).
+
 ### Likes (MVP)
 
 - Model: `like_events` (`LikeEvent`) in `backend/app/models/like_event.py` — `user_id` → `users.id`, `song_id` → `songs.id`, `created_at`, **`UNIQUE (user_id, song_id)`** (explicit preference, separate from manual playlist organization).
-- Service: `backend/app/services/like_service.py` — `like_song`, `unlike_song`, `get_or_create_liked_songs_playlist`. **Idempotent:** duplicate likes do not duplicate rows or playlist tracks; unlike removes the event and removes the track from the user’s private **“Liked Songs”** playlist when present.
-- **“Liked Songs” playlist:** title exactly `Liked Songs`, **`is_public = false`**, owned by the user; looked up only among **private** playlists with that title (non-deleted). Created automatically on first like if missing.
-- API: `backend/app/api/like_routes.py`, mounted **without prefix** in `backend/app/main.py` next to other routers — **`POST /like`** (JSON `{ "song_id" }`), **`DELETE /like?song_id=`** — both require **`get_current_user`** (Bearer JWT). **No** discovery, streaming, or payout side effects.
+- Service: `backend/app/services/like_service.py` — `like_song`, `unlike_song`, `get_user_liked_song_ids`, `get_or_create_liked_songs_playlist`. **Idempotent:** duplicate likes do not duplicate rows or playlist tracks; unlike removes the event and removes the track from the user’s private **“Liked Songs”** playlist when present.
+- **“Liked Songs” playlist:** title exactly `Liked Songs`, **`is_public = false`**, owned by the user; looked up only among **private** playlists with that title (non-deleted). **`get_or_create_liked_songs_playlist`** runs from **`create_user`** so every new account has an empty playlist immediately; remains idempotent on first like if creation were ever skipped.
+- API: `backend/app/api/like_routes.py`, mounted **without prefix** in `backend/app/main.py` next to other routers — **`GET /likes`** returns `{ "song_ids": [<int>, ...] }` (newest-like first), **`POST /like`** (JSON `{ "song_id" }`), **`DELETE /like?song_id=`** — all require **`get_current_user`** (Bearer JWT). **No** discovery, streaming, or payout side effects.
 
 ### Core architecture
 
@@ -371,8 +380,9 @@
   - top artists concentration (`top_artists`, `top_artists_share`, `total_impressions`),
   - high-score/low-CTR anomaly candidates,
   - diversity-per-request summary (`avg_unique_artists`, `min_unique_artists`, `max_unique_artists`),
-  - score-bucket CTR correlation (`score_ctr_correlation`) for ranking drift detection.
-  All metrics are computed directly from `discovery_events` (+ existing JSON metadata keys) without introducing new infrastructure or background pipelines.
+  - score-bucket CTR correlation (`score_ctr_correlation`) for ranking drift detection,
+  - **`signal_snapshot`** (from `app/services/admin_signal_snapshot.build_admin_signal_snapshot`): **`playlist_reorder_events`** + **`playlists`** join (14d, same weighted clamp/liked rules as discovery reorder signal), **`reorder.scale`** (avg / p95 per-song weighted sum), per-song histogram + top 50 reorder songs (with **`title`**, **`artist_name`**), liked share of weighted sum, **`like_events`** 14d overview + top 50 (same metadata), **`likes_reorder_overlap`**, **`top_reorder_coverage_in_discovery`** using **distinct `song_id`** in 24h impressions vs top-50 reorder set (see `docs/state/discovery.md`). Top-artists and high-score/low-CTR anomaly rows are enriched with **`artist_name`** / **`song_title`** (+ artist display) via batched **`artists`** / **`songs`** queries (no N+1).
+  All `discovery_events`-derived metrics use existing JSON metadata keys without new infrastructure or background pipelines; signal snapshot uses read-time SQL only.
 - Admin analytics aggregates are hard-windowed to the last 24 hours (`created_at >= datetime('now', '-1 day')`) for freshness/stability and to avoid mixing old ranking regimes into active operational views.
 - CTR/impression robustness: analytics counts use distinct impression keys (`request_id || '-' || song_id`) instead of raw row counts, preventing duplicate-row inflation and preserving request-level comparability.
 - Analytics safety guard: if `discovery_events` is missing (misaligned DB), `GET /discovery/admin/analytics` returns empty additive blocks instead of crashing the route.

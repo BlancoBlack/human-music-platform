@@ -133,6 +133,8 @@ def test_build_candidate_set_empty_playlists_no_crash(db_session: Session) -> No
     assert isinstance(payload["candidate_ids"], list)
     assert "candidate_pool_by_song" in payload
     assert payload["playlist_count_by_song"] == {}
+    assert payload["reorder_signal_by_song"] == {}
+    assert payload.get("like_count_by_song") == {}
 
 
 def test_load_playlist_membership_counts_public_only(db_session: Session) -> None:
@@ -169,4 +171,26 @@ def test_score_candidates_playlist_boost_weak_and_zero_safe(db_session: Session)
     )
     assert int(by_id_z[s151]["playlist_count"]) == 0
     assert float(by_id_z[s151]["playlist_signal"]) == 0.0
+    assert float(by_id_z[s151]["reorder_signal"]) == 0.0
+    assert float(by_id_z[s151]["reorder_boost"]) == 0.0
     assert int(by_id_t[s151]["playlist_count"]) == 1
+    row = by_id_t[s151]
+    assert "signals" in row
+    assert float(row["signal_score"]) == pytest.approx(
+        float(row["user_signal_score"]) + float(row["global_signal_score"])
+    )
+    assert float(row["global_signal_score"]) == pytest.approx(
+        float(row["playlist_boost"]) + float(row["like_boost"])
+    )
+    assert float(row["playlist_signal"]) == float(row["signals"]["global"]["playlist"]["signal"])
+    assert float(row["playlist_boost"]) == float(row["signals"]["global"]["playlist"]["boost"])
+    assert float(row["reorder_signal"]) == float(row["signals"]["user"]["reorder"]["signal"])
+    assert float(row["reorder_boost"]) == float(row["signals"]["user"]["reorder"]["boost"])
+    assert int(row["like_count"]) == int(row["signals"]["global"]["likes"]["raw"])
+    assert float(row["like_signal"]) == float(row["signals"]["global"]["likes"]["signal"])
+    assert float(row["like_boost"]) == float(row["signals"]["global"]["likes"]["boost"])
+    assert float(row["user_signal_score"]) == float(row["signals"]["total"]["user_signal_score"])
+    assert float(row["global_signal_score"]) == float(row["signals"]["total"]["global_signal_score"])
+    assert float(row["signal_score"]) == pytest.approx(
+        float(row["user_signal_score"]) + float(row["global_signal_score"])
+    )

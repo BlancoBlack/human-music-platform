@@ -49,6 +49,62 @@ def test_http_playlists_require_auth(playlist_http_client) -> None:
     assert r.status_code == 401
 
 
+def test_http_playlists_list_requires_auth(playlist_http_client) -> None:
+    client, _ = playlist_http_client
+    assert client.get("/playlists").status_code == 401
+
+
+def test_http_playlists_list_owner_metadata_only(playlist_http_client) -> None:
+    client, SessionFactory = playlist_http_client
+    db = SessionFactory()
+    try:
+        db.add(Role(name="user"))
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.post(
+        "/auth/register",
+        json={"email": "pl.list.a@test.example", "password": "password1"},
+    )
+    token_a = r.json()["access_token"]
+    r = client.post(
+        "/auth/register",
+        json={"email": "pl.list.b@test.example", "password": "password1"},
+    )
+    token_b = r.json()["access_token"]
+
+    r_create = client.post(
+        "/playlists",
+        json={"title": "Mine", "is_public": False},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert r_create.status_code == 200
+    pid = r_create.json()["id"]
+
+    r_empty = client.get("/playlists", headers={"Authorization": f"Bearer {token_b}"})
+    assert r_empty.status_code == 200
+    empty_body = r_empty.json()["playlists"]
+    assert len(empty_body) == 1
+    assert empty_body[0]["title"] == "Liked Songs"
+    assert empty_body[0]["is_public"] is False
+    assert empty_body[0]["thumbnail_urls"] == []
+
+    r_list = client.get("/playlists", headers={"Authorization": f"Bearer {token_a}"})
+    assert r_list.status_code == 200
+    body = r_list.json()["playlists"]
+    assert len(body) == 2
+    assert body[0]["title"] == "Liked Songs"
+    assert body[0]["is_public"] is False
+    assert body[0]["thumbnail_urls"] == []
+    assert body[1] == {
+        "id": pid,
+        "title": "Mine",
+        "is_public": False,
+        "thumbnail_urls": [],
+    }
+
+
 def test_http_create_playlist(playlist_http_client) -> None:
     client, SessionFactory = playlist_http_client
     db = SessionFactory()
@@ -74,3 +130,40 @@ def test_http_create_playlist(playlist_http_client) -> None:
     assert body["title"] == "HTTP List"
     assert body["is_public"] is True
     assert body["tracks"] == []
+
+
+def test_http_playlist_detail_enriched_empty(playlist_http_client) -> None:
+    """GET /playlists/{id} returns cover_urls + enriched track shape (may be empty)."""
+    client, SessionFactory = playlist_http_client
+    db = SessionFactory()
+    try:
+        db.add(Role(name="user"))
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.post(
+        "/auth/register",
+        json={"email": "pl.detail.empty@test.example", "password": "password1"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+
+    r_create = client.post(
+        "/playlists",
+        json={"title": "Empty detail", "is_public": False},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r_create.status_code == 200
+    pid = r_create.json()["id"]
+
+    r_detail = client.get(
+        f"/playlists/{pid}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r_detail.status_code == 200, r_detail.text
+    detail = r_detail.json()
+    assert detail["id"] == pid
+    assert detail["title"] == "Empty detail"
+    assert detail["cover_urls"] == []
+    assert detail["tracks"] == []

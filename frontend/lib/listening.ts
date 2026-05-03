@@ -13,6 +13,12 @@ export type DiscoveryPlaybackContext = {
   position: number;
 };
 
+/** Mirrors `POST /stream/start-session` `source_type` / `source_id` (backend listening session attribution). */
+export type ListeningPlaybackSource = {
+  source_type: "playlist" | "discovery" | "search" | "direct";
+  source_id: string;
+};
+
 /** Always send `{ song_id: number }`; unwrap accidental `{ song_id: { song_id: n } }` at runtime. */
 function coerceStartSessionSongId(songId: number): number {
   let raw: unknown = songId as unknown;
@@ -30,7 +36,10 @@ function coerceStartSessionSongId(songId: number): number {
 
 export async function postStartSession(
   songId: number,
-  opts?: { discoveryContext?: DiscoveryPlaybackContext | null },
+  opts?: {
+    discoveryContext?: DiscoveryPlaybackContext | null;
+    playbackSource?: ListeningPlaybackSource | null;
+  },
 ): Promise<StartSessionResponse> {
   const song_id = coerceStartSessionSongId(songId);
   const payload: {
@@ -38,11 +47,18 @@ export async function postStartSession(
     discovery_request_id?: string;
     discovery_section?: DiscoveryPlaybackContext["section"];
     discovery_position?: number;
+    source_type?: string;
+    source_id?: string;
   } = { song_id };
   if (opts?.discoveryContext?.request_id) {
     payload.discovery_request_id = opts.discoveryContext.request_id;
     payload.discovery_section = opts.discoveryContext.section;
     payload.discovery_position = opts.discoveryContext.position;
+  }
+  const ps = opts?.playbackSource;
+  if (ps?.source_type) {
+    payload.source_type = ps.source_type;
+    payload.source_id = ps.source_id;
   }
   let res = await apiFetch("/stream/start-session", {
     method: "POST",

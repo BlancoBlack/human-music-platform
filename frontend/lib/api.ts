@@ -404,6 +404,149 @@ export async function fetchDiscoveryHome(): Promise<DiscoveryResponse> {
   return res.json();
 }
 
+/** GET /likes — requires auth */
+export async function fetchLikedSongIds(): Promise<number[]> {
+  const res = await apiFetch("/likes");
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to load likes");
+  }
+  const j = (await res.json()) as { song_ids?: unknown };
+  if (!Array.isArray(j.song_ids)) return [];
+  return j.song_ids.map((id) => Number(id)).filter((n) => Number.isFinite(n));
+}
+
+export async function postLikeSong(songId: number): Promise<void> {
+  const res = await apiFetch("/like", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ song_id: songId }),
+  });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(typeof detail === "string" && detail ? detail : "Like failed");
+  }
+}
+
+export async function deleteLikeSong(songId: number): Promise<void> {
+  const params = new URLSearchParams({ song_id: String(songId) });
+  const res = await apiFetch(`/like?${params}`, { method: "DELETE" });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(typeof detail === "string" && detail ? detail : "Unlike failed");
+  }
+}
+
+export type PlaylistSummary = {
+  id: number;
+  title: string;
+  is_public: boolean;
+  /** Public media paths for collage (0–4); from first tracks by position, same hydration as playlist detail. */
+  thumbnail_urls: string[];
+};
+
+export type PlaylistDetailTrack = {
+  song_id: number;
+  position: number;
+  title: string;
+  artist_name: string;
+  cover_url: string | null;
+  audio_url: string | null;
+};
+
+export type PlaylistDetail = {
+  id: number;
+  owner_user_id: number;
+  title: string;
+  description: string | null;
+  is_public: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  cover_urls: (string | null)[];
+  tracks: PlaylistDetailTrack[];
+};
+
+/** GET /playlists/{id} — auth; enriched tracks + cover_urls (see backend). */
+export async function fetchPlaylistDetail(playlistId: number): Promise<PlaylistDetail> {
+  const res = await apiFetch(`/playlists/${playlistId}`);
+  if (res.status === 404) {
+    throw new Error("Playlist not found");
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to load playlist");
+  }
+  return res.json() as Promise<PlaylistDetail>;
+}
+
+/** GET /playlists — auth; summaries only (no tracks) */
+export async function fetchPlaylistSummaries(): Promise<PlaylistSummary[]> {
+  const res = await apiFetch("/playlists");
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Failed to load playlists");
+  }
+  const j = (await res.json()) as { playlists?: PlaylistSummary[] };
+  return Array.isArray(j.playlists) ? j.playlists : [];
+}
+
+/** POST /playlists — auth; body `{ title }` (optional fields omitted). */
+export async function createPlaylist(title: string): Promise<{ id: number; title: string }> {
+  const res = await apiFetch("/playlists", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: title.trim() }),
+  });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(
+      typeof detail === "string" && detail ? detail : "Could not create playlist",
+    );
+  }
+  const j = (await res.json()) as { id?: unknown; title?: unknown };
+  const id = typeof j.id === "number" ? j.id : Number(j.id);
+  const playlistTitle = typeof j.title === "string" ? j.title : "";
+  if (!Number.isFinite(id) || id < 1 || !playlistTitle) {
+    throw new Error("Invalid playlist response");
+  }
+  return { id, title: playlistTitle };
+}
+
+export async function addTrackToPlaylist(
+  playlistId: number,
+  songId: number,
+): Promise<void> {
+  const res = await apiFetch(`/playlists/${playlistId}/tracks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ song_id: songId }),
+  });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(
+      typeof detail === "string" && detail ? detail : "Add to playlist failed",
+    );
+  }
+}
+
+/** PUT /playlists/{id}/reorder — auth; owner only; body `{ ordered_song_ids }` (full permutation). */
+export async function putPlaylistReorder(
+  playlistId: number,
+  orderedSongIds: number[],
+): Promise<void> {
+  const res = await apiFetch(`/playlists/${playlistId}/reorder`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ordered_song_ids: orderedSongIds }),
+  });
+  if (!res.ok) {
+    const { detail } = await parseErrorPayload(res);
+    throw new Error(
+      typeof detail === "string" && detail ? detail : "Could not reorder playlist",
+    );
+  }
+}
+
 export async function postDiscoveryEvent(body: DiscoveryPlayEventBody): Promise<void> {
   const res = await apiFetch("/discovery/events", {
     method: "POST",
@@ -473,6 +616,7 @@ export type DiscoveryCtrByRankingVersionRow = DiscoveryCtrRow & {
 
 export type DiscoveryTopArtistRow = {
   artist_id: number;
+  artist_name?: string;
   impressions: number;
   share: number;
 };
@@ -486,6 +630,8 @@ export type DiscoveryTopArtistsConcentration = {
 export type DiscoveryHighScoreLowCtrRow = {
   song_id: number;
   artist_id: number | null;
+  song_title?: string;
+  artist_name?: string;
   avg_score_play_now: number;
   impressions: number;
   clicks: number;
@@ -502,6 +648,98 @@ export type DiscoveryScoreCtrCorrelationRow = DiscoveryCtrRow & {
   bucket: string;
 };
 
+export type AdminSignalHistogramBucket = {
+  bucket: string;
+  song_count: number;
+};
+
+export type AdminSignalReorderOverview = {
+  row_count: number;
+  distinct_users: number;
+  distinct_songs: number;
+};
+
+export type AdminSignalReorderScale = {
+  avg_weighted_sum: number;
+  p95_weighted_sum: number;
+};
+
+export type AdminSignalTopReorderSong = {
+  song_id: number;
+  title: string;
+  artist_name: string;
+  weighted_sum: number;
+  event_count: number;
+};
+
+export type AdminSignalReorderSnapshot = {
+  window_days: number;
+  overview: AdminSignalReorderOverview;
+  scale: AdminSignalReorderScale;
+  liked_share_of_weighted_sum: number;
+  per_song_weighted_histogram: AdminSignalHistogramBucket[];
+  top_reorder_songs: AdminSignalTopReorderSong[];
+};
+
+export type AdminSignalLikeOverview = {
+  total_events: number;
+  distinct_users: number;
+  distinct_songs: number;
+};
+
+export type AdminSignalTopLikedSong = {
+  song_id: number;
+  title: string;
+  artist_name: string;
+  /** Display alias; same as `artist_name` when present */
+  artist?: string;
+  count: number;
+};
+
+export type AdminLikeRankingHistogramRow = {
+  bucket: string;
+  song_count: number;
+};
+
+export type AdminLikeRankingCorrelation = {
+  avg_like_signal: number;
+  avg_playlist_signal: number;
+  pct_songs_with_like_and_playlist: number;
+};
+
+export type AdminLikeRankingAvgContributions = {
+  playlist_boost: number;
+  like_boost: number;
+  reorder_boost: number | null;
+  reorder_note: string;
+};
+
+export type AdminLikeRankingContext = {
+  maturity_minutes: number;
+  like_cap: number;
+  like_cap_enabled: boolean;
+  playlist_like_correlation_damp: number;
+  sample_songs: number;
+  like_signal_histogram: AdminLikeRankingHistogramRow[];
+  like_boost_histogram: AdminLikeRankingHistogramRow[];
+  correlation: AdminLikeRankingCorrelation;
+  avg_contributions: AdminLikeRankingAvgContributions;
+};
+
+export type AdminSignalLikesSnapshot = {
+  window_days: number;
+  overview: AdminSignalLikeOverview;
+  top_liked_songs: AdminSignalTopLikedSong[];
+  ranking_context: AdminLikeRankingContext;
+};
+
+export type AdminSignalSnapshot = {
+  reorder: AdminSignalReorderSnapshot;
+  likes: AdminSignalLikesSnapshot;
+  top_reorder_coverage_in_discovery: number;
+  likes_reorder_overlap: number;
+};
+
 export type DiscoveryAdminAnalyticsResponse = {
   ctr_by_section: DiscoveryCtrBySectionRow[];
   ctr_by_position: DiscoveryCtrByPositionRow[];
@@ -512,6 +750,7 @@ export type DiscoveryAdminAnalyticsResponse = {
   high_score_low_ctr_anomalies: DiscoveryHighScoreLowCtrRow[];
   diversity_per_request: DiscoveryDiversityPerRequest;
   score_ctr_correlation: DiscoveryScoreCtrCorrelationRow[];
+  signal_snapshot: AdminSignalSnapshot;
 };
 
 export async function fetchDiscoveryAdminAnalytics(): Promise<DiscoveryAdminAnalyticsResponse> {

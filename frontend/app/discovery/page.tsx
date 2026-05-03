@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useAudioPlayer } from "@/components/audio/AudioPlayerProvider";
+import { SongActions } from "@/components/SongActions";
 import { useAuth } from "@/context/AuthContext";
 import {
   API_BASE,
@@ -105,7 +106,7 @@ function DiscoveryRow({
   isPlayNowLead?: boolean;
 }) {
   const { authReady, isAuthenticated } = useAuth();
-  const { playTrack, currentTrack, isPlaying, togglePlayback } =
+  const { playTrack, currentTrack, isPlaying, togglePlayback, isActivationClickSuppressed } =
     useAudioPlayer();
 
   const coverSrc =
@@ -206,7 +207,14 @@ function DiscoveryRow({
         className={rowClass}
         role={canAttemptPlay ? "button" : undefined}
         tabIndex={canAttemptPlay ? 0 : undefined}
-        onClick={canAttemptPlay ? handleActivate : undefined}
+        onClick={
+          canAttemptPlay
+            ? () => {
+                if (isActivationClickSuppressed()) return;
+                handleActivate();
+              }
+            : undefined
+        }
         onKeyDown={
           canAttemptPlay
             ? (e) => {
@@ -251,7 +259,8 @@ function DiscoveryRow({
               </p>
             )}
           </div>
-          <div className="flex shrink-0 items-center self-center">
+          <div className="flex shrink-0 items-center gap-1 self-center sm:gap-2">
+            <SongActions songId={track.id} />
             {canAttemptPlay ? (
               <button
                 type="button"

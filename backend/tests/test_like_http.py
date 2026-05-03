@@ -52,6 +52,30 @@ def test_like_requires_auth(like_http_client) -> None:
     assert r.status_code == 401
 
 
+def test_likes_list_requires_auth(like_http_client) -> None:
+    client, _ = like_http_client
+    assert client.get("/likes").status_code == 401
+
+
+def test_likes_list_empty_when_none(like_http_client) -> None:
+    client, SessionFactory = like_http_client
+    db = SessionFactory()
+    try:
+        db.add(Role(name="user"))
+        db.commit()
+    finally:
+        db.close()
+    r = client.post(
+        "/auth/register",
+        json={"email": "likes.empty@test.example", "password": "password1"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+    r2 = client.get("/likes", headers={"Authorization": f"Bearer {token}"})
+    assert r2.status_code == 200
+    assert r2.json() == {"song_ids": []}
+
+
 def test_like_flow_http(like_http_client) -> None:
     client, SessionFactory = like_http_client
     db = SessionFactory()

@@ -38,6 +38,7 @@ def get_or_create_liked_songs_playlist(db: Session, *, user_id: int) -> Playlist
     """
     Private playlist titled ``LIKED_SONGS_PLAYLIST_TITLE`` owned by ``user_id``.
 
+    Idempotent: also invoked from ``create_user`` so new accounts always have this playlist.
     Matches only non-deleted, **private** playlists with that exact title so a user's
     public playlist with the same name does not hijack the system playlist.
     """
@@ -62,6 +63,18 @@ def get_or_create_liked_songs_playlist(db: Session, *, user_id: int) -> Playlist
         description=None,
         is_public=False,
     )
+
+
+def get_user_liked_song_ids(db: Session, *, user_id: int) -> list[int]:
+    """Return ``song_id`` values the user has liked, newest first."""
+    uid = int(user_id)
+    rows = (
+        db.query(LikeEvent.song_id)
+        .filter(LikeEvent.user_id == uid)
+        .order_by(LikeEvent.created_at.desc(), LikeEvent.id.desc())
+        .all()
+    )
+    return [int(r[0]) for r in rows]
 
 
 def _playlist_track_exists(db: Session, *, playlist_id: int, song_id: int) -> bool:

@@ -1,15 +1,21 @@
-"""Playlist CRUD (MVP). No discovery, curator economics, or streaming integration."""
+"""Playlist CRUD (MVP). Reorder events feed discovery read-side signals only; no curator economics or streaming integration."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.playlist import Playlist, PlaylistTrack
+from app.models.playlist_reorder_event import PlaylistReorderEvent
 from app.models.song import Song
+from app.services.discovery_hydration import (
+    build_placeholder,
+    hydrate_songs_batch_for_playlist,
+)
+from app.services.discovery_row_normalize import normalize_discovery_track_row
 
 
 class PlaylistNotFoundError(Exception):
@@ -26,6 +32,16 @@ class PlaylistValidationError(Exception):
 
 def _touch_playlist_updated_at(playlist: Playlist) -> None:
     playlist.updated_at = datetime.utcnow()
+
+
+def _playlist_updated_at_utc_for_event(playlist: Playlist) -> datetime:
+    """UTC-aware snapshot aligned with ``Playlist.updated_at`` (naive UTC in DB)."""
+    ts = playlist.updated_at
+    if ts is None:
+        return datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts
 
 
 def _compact_positions(db: Session, playlist_id: int) -> None:
@@ -240,6 +256,7 @@ def reorder_playlist_tracks(
     if set(ordered) != set(current_ids):
         raise PlaylistValidationError("ordered_song_ids must match playlist tracks")
 
+    old_pos_by_song = {int(r.song_id): int(r.position) for r in current_rows}
     pos_by_song = {sid: i + 1 for i, sid in enumerate(ordered)}
     # Two-phase update avoids UNIQUE(playlist_id, position) violations mid-flush.
     for i, r in enumerate(current_rows):
@@ -251,8 +268,107 @@ def reorder_playlist_tracks(
         db.flush()
     except IntegrityError as exc:
         raise PlaylistValidationError("Reorder conflict") from exc
+
     _touch_playlist_updated_at(pl)
     db.flush()
+
+    uid = int(owner_user_id)
+    pid = int(playlist_id)
+    now = datetime.utcnow()
+    playlist_snap = _playlist_updated_at_utc_for_event(pl)
+    reorder_mappings: list[dict] = []
+    for sid in ordered:
+        sid_int = int(sid)
+        old_p = old_pos_by_song[sid_int]
+        new_p = pos_by_song[sid_int]
+        if old_p == new_p:
+            continue
+        reorder_mappings.append(
+            {
+                "user_id": uid,
+                "playlist_id": pid,
+                "song_id": sid_int,
+                "old_position": old_p,
+                "new_position": new_p,
+                "delta_position": old_p - new_p,
+                "playlist_updated_at": playlist_snap,
+                "created_at": now,
+            }
+        )
+    if reorder_mappings:
+        db.bulk_insert_mappings(PlaylistReorderEvent, reorder_mappings)
+
+    db.flush()
+
+
+def get_user_playlists(db: Session, *, user_id: int) -> list[dict]:
+    """
+    Playlist summaries owned by ``user_id`` (``deleted_at`` IS NULL).
+
+    Each item: ``id``, ``title``, ``is_public``, ``thumbnail_urls`` (0–4 public cover path
+    strings from the first four tracks by ``position``, same hydration as playlist detail;
+    omits null covers — empty playlist → ``[]``).
+    """
+    uid = int(user_id)
+    # "Liked Songs" first (title matches like_service.LIKED_SONGS_PLAYLIST_TITLE), then recency.
+    liked_first = case((Playlist.title == "Liked Songs", 0), else_=1)
+    rows = (
+        db.query(Playlist.id, Playlist.title, Playlist.is_public)
+        .filter(Playlist.owner_user_id == uid, Playlist.deleted_at.is_(None))
+        .order_by(liked_first, Playlist.updated_at.desc(), Playlist.id.asc())
+        .all()
+    )
+    if not rows:
+        return []
+
+    playlist_ids = [int(r[0]) for r in rows]
+    track_rows = (
+        db.query(PlaylistTrack.playlist_id, PlaylistTrack.song_id)
+        .filter(PlaylistTrack.playlist_id.in_(playlist_ids))
+        .order_by(
+            PlaylistTrack.playlist_id.asc(),
+            PlaylistTrack.position.asc(),
+            PlaylistTrack.id.asc(),
+        )
+        .all()
+    )
+
+    first_four_song_ids: dict[int, list[int]] = {pid: [] for pid in playlist_ids}
+    for pl_id, song_id in track_rows:
+        bucket = first_four_song_ids[int(pl_id)]
+        if len(bucket) < 4:
+            bucket.append(int(song_id))
+
+    batch_ids: list[int] = []
+    seen_sid: set[int] = set()
+    for pid in playlist_ids:
+        for sid in first_four_song_ids[pid]:
+            if sid not in seen_sid:
+                seen_sid.add(sid)
+                batch_ids.append(sid)
+
+    hydrate_map = hydrate_songs_batch_for_playlist(db, batch_ids)
+
+    def thumbnails_for(playlist_id: int) -> list[str]:
+        out: list[str] = []
+        for sid in first_four_song_ids[playlist_id][:4]:
+            row = hydrate_map.get(sid)
+            if row is None:
+                row = normalize_discovery_track_row(dict(build_placeholder(sid)))
+            cu = row.get("cover_url")
+            if cu:
+                out.append(str(cu))
+        return out[:4]
+
+    return [
+        {
+            "id": int(r[0]),
+            "title": r[1],
+            "is_public": bool(r[2]),
+            "thumbnail_urls": thumbnails_for(int(r[0])),
+        }
+        for r in rows
+    ]
 
 
 def playlist_to_detail(pl: Playlist) -> dict:
@@ -268,4 +384,50 @@ def playlist_to_detail(pl: Playlist) -> dict:
         "tracks": [
             {"song_id": int(t.song_id), "position": int(t.position)} for t in tracks
         ],
+    }
+
+
+def playlist_to_detail_enriched(db: Session, pl: Playlist) -> dict:
+    """
+    Full playlist detail for ``GET /playlists/{id}``: metadata plus per-track titles,
+    artist names, ``cover_url`` / ``audio_url`` (discovery-normalized), and ``cover_urls``
+    for the first four tracks by position (null entries allowed).
+
+    Hydration is batched via ``hydrate_songs_batch_for_playlist`` (same URL and
+    playability rules as discovery).
+    """
+    tracks_sorted = sorted(pl.tracks, key=lambda t: (int(t.position), int(t.id)))
+    ordered_ids = [int(t.song_id) for t in tracks_sorted]
+    hydrate_map = hydrate_songs_batch_for_playlist(db, ordered_ids)
+
+    enriched_tracks: list[dict] = []
+    for t in tracks_sorted:
+        sid = int(t.song_id)
+        pos = int(t.position)
+        h = hydrate_map.get(sid)
+        if h is None:
+            h = normalize_discovery_track_row(dict(build_placeholder(sid)))
+        enriched_tracks.append(
+            {
+                "song_id": sid,
+                "position": pos,
+                "title": h["title"],
+                "artist_name": h["artist_name"],
+                "cover_url": h["cover_url"],
+                "audio_url": h["audio_url"],
+            }
+        )
+
+    cover_urls = [row["cover_url"] for row in enriched_tracks[:4]]
+
+    return {
+        "id": int(pl.id),
+        "owner_user_id": int(pl.owner_user_id),
+        "title": pl.title,
+        "description": pl.description,
+        "is_public": bool(pl.is_public),
+        "created_at": pl.created_at.isoformat() if pl.created_at else None,
+        "updated_at": pl.updated_at.isoformat() if pl.updated_at else None,
+        "cover_urls": cover_urls,
+        "tracks": enriched_tracks,
     }

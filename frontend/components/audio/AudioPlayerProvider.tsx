@@ -12,6 +12,7 @@ import {
 } from "react";
 import {
   type DiscoveryPlaybackContext,
+  type ListeningPlaybackSource,
   postCheckpoint,
   postFinalizeWithRetry,
   postStartSession,
@@ -31,6 +32,12 @@ export type PlayTrackOptions = {
   queueIndex?: number;
   /** Optional discovery context propagated into start-session linkage. */
   discoveryContext?: DiscoveryPlaybackContext;
+  /** Listening session attribution (`source_type` / `source_id` on start-session). */
+  playbackSource?: ListeningPlaybackSource | null;
+  /**
+   * When true, keep the prior `playbackSource` across this call (queue autoplay, next/prev).
+   */
+  continuePlaybackSource?: boolean;
 };
 
 type AudioPlayerContextValue = {
@@ -47,11 +54,26 @@ type AudioPlayerContextValue = {
   /** Index of `currentTrack` in `queue`, or 0 if queue is empty. */
   currentIndex: number;
   playTrack: (track: PlayableTrack, opts?: PlayTrackOptions) => Promise<void>;
+  /**
+   * Replace the navigation queue and current index **without** touching the audio element,
+   * listening session, or playback position. Used after playlist reorder when the same
+   * track keeps playing. No-op if nothing is playing or the current song id is not in `nextQueue`.
+   */
+  replaceQueuePreservingPlayback: (nextQueue: PlayableTrack[]) => void;
+  /** Active listening attribution ref snapshot (for playlist queue sync guards). */
+  getPlaybackSource: () => ListeningPlaybackSource | null;
   nextTrack: () => Promise<void>;
   prevTrack: () => Promise<void>;
   pause: () => void;
   seekTo: (seconds: number) => void;
   togglePlayback: () => Promise<void>;
+  /**
+   * After closing overlays (e.g. playlist modal), absorb stray `click` retargeted at list rows.
+   * Call before closing; pair with `isActivationClickSuppressed()` only on row **`click`** handlers.
+   */
+  suppressNextClicks: (ms?: number) => void;
+  /** True during the short window after `suppressNextClicks`; ignore row **`click`** only. */
+  isActivationClickSuppressed: () => boolean;
 };
 
 const AudioPlayerContext = createContext<AudioPlayerContextValue | null>(null);
@@ -84,8 +106,21 @@ function startEngageClock(engageClockStartRef: MutableRefObject<number | null>) 
   }
 }
 
+function isTyping(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+
+  const tag = target.tagName.toLowerCase();
+
+  return (
+    tag === "input" ||
+    tag === "textarea" ||
+    target.isContentEditable
+  );
+}
+
 export function AudioPlayerProvider({ children }: { children: React.ReactNode }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ignoreClicksUntilRef = useRef(0);
 
   const sessionIdRef = useRef<number | null>(null);
   const songIdRef = useRef<number | null>(null);
@@ -94,11 +129,14 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
   const engageClockStartRef = useRef<number | null>(null);
   const finalizedSessionsRef = useRef<Set<number>>(new Set());
   const discoveryContextRef = useRef<DiscoveryPlaybackContext | null>(null);
+  const playbackSourceRef = useRef<ListeningPlaybackSource | null>(null);
   const queueRef = useRef<PlayableTrack[]>([]);
   const currentIndexRef = useRef(0);
   const playTrackRef = useRef<
     (track: PlayableTrack, opts?: PlayTrackOptions) => Promise<void>
   >(async () => {});
+  const togglePlaybackRef = useRef<() => Promise<void>>(async () => {});
+  const currentTrackRef = useRef<PlayableTrack | null>(null);
 
   const [currentTrack, setCurrentTrack] = useState<PlayableTrack | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -220,6 +258,7 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
           el.load();
           engagedMsRef.current = 0;
           songIdRef.current = null;
+          playbackSourceRef.current = null;
           setCurrentTrack(null);
           setIsPlaying(false);
           setIsBuffering(false);
@@ -231,6 +270,7 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
       try {
         const { session_id } = await postStartSession(expiredGid, {
           discoveryContext: discoveryContextRef.current,
+          playbackSource: playbackSourceRef.current,
         });
         sessionIdRef.current = session_id;
         songIdRef.current = expiredGid;
@@ -292,6 +332,16 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
 
       await finalizeCurrentIfNeeded();
 
+      if (opts?.continuePlaybackSource === true) {
+        /* keep playbackSourceRef for queue autoplay / next / prev */
+      } else if (opts != null && "playbackSource" in opts) {
+        playbackSourceRef.current = opts.playbackSource ?? null;
+      } else if (opts?.discoveryContext != null) {
+        playbackSourceRef.current = null;
+      } else {
+        playbackSourceRef.current = null;
+      }
+
       setQueue(q);
       setCurrentIndex(idx);
       setCurrentTrack(track);
@@ -305,10 +355,12 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
       try {
         const started = await postStartSession(songId, {
           discoveryContext: discoveryContextRef.current,
+          playbackSource: playbackSourceRef.current,
         });
         session_id = started.session_id;
       } catch (e) {
         discoveryContextRef.current = null;
+        playbackSourceRef.current = null;
         setCurrentTrack(null);
         setIsBuffering(false);
         console.error("start-session failed", e);
@@ -332,6 +384,7 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
           sessionIdRef.current = null;
           songIdRef.current = null;
           discoveryContextRef.current = null;
+          playbackSourceRef.current = null;
           nextSequenceRef.current = 0;
           engageClockStartRef.current = null;
           engagedMsRef.current = 0;
@@ -349,11 +402,49 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
     [finalizeCurrentIfNeeded],
   );
 
+  const replaceQueuePreservingPlayback = useCallback((nextQueue: PlayableTrack[]) => {
+    const ct = currentTrackRef.current;
+    if (!ct?.audioUrl || nextQueue.length === 0) return;
+
+    const idx = nextQueue.findIndex((t) => t.id === ct.id);
+    if (idx < 0) return;
+
+    queueRef.current = nextQueue;
+    currentIndexRef.current = idx;
+    setQueue(nextQueue);
+    setCurrentIndex(idx);
+    const aligned = nextQueue[idx];
+    if (aligned) setCurrentTrack(aligned);
+  }, []);
+
+  const getPlaybackSource = useCallback(
+    (): ListeningPlaybackSource | null => playbackSourceRef.current,
+    [],
+  );
+
   useEffect(() => {
     queueRef.current = queue;
     currentIndexRef.current = currentIndex;
     playTrackRef.current = playTrack;
   }, [queue, currentIndex, playTrack]);
+
+  useEffect(() => {
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTyping(e.target)) return;
+      if (e.defaultPrevented) return;
+      if (e.key !== " " && e.code !== "Space") return;
+      if (e.repeat) return;
+      if (!currentTrackRef.current) return;
+      e.preventDefault();
+      void togglePlaybackRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     const el = audioRef.current;
@@ -393,7 +484,11 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
       if (nextIdx >= 0) {
         const next = q[nextIdx];
         try {
-          await playTrackRef.current(next, { queue: q, queueIndex: nextIdx });
+          await playTrackRef.current(next, {
+            queue: q,
+            queueIndex: nextIdx,
+            continuePlaybackSource: true,
+          });
         } catch (e) {
           console.error("autoplay next track failed", e);
         }
@@ -437,12 +532,25 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
     el.currentTime = Math.min(d, Math.max(0, seconds));
   }, []);
 
+  const suppressNextClicks = useCallback((ms = 250) => {
+    ignoreClicksUntilRef.current = Date.now() + ms;
+  }, []);
+
+  const isActivationClickSuppressed = useCallback(
+    () => Date.now() < ignoreClicksUntilRef.current,
+    [],
+  );
+
   const togglePlayback = useCallback(async () => {
     const el = audioRef.current;
     if (!el || !currentTrack || isBuffering) return;
     if (!el.src) return;
     if (el.ended) {
-      await playTrack(currentTrack, { queue, queueIndex: currentIndex });
+      await playTrack(currentTrack, {
+        queue,
+        queueIndex: currentIndex,
+        continuePlaybackSource: true,
+      });
       return;
     }
     if (el.paused) {
@@ -456,12 +564,18 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
     }
   }, [currentTrack, currentIndex, isBuffering, playTrack, queue]);
 
+  togglePlaybackRef.current = togglePlayback;
+
   const nextTrack = useCallback(async () => {
     if (currentIndex >= queue.length - 1) return;
     const next = queue[currentIndex + 1];
     if (!next?.audioUrl) return;
     try {
-      await playTrack(next, { queue, queueIndex: currentIndex + 1 });
+      await playTrack(next, {
+        queue,
+        queueIndex: currentIndex + 1,
+        continuePlaybackSource: true,
+      });
     } catch (e) {
       console.error("nextTrack failed", e);
     }
@@ -472,7 +586,11 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
     const prev = queue[currentIndex - 1];
     if (!prev?.audioUrl) return;
     try {
-      await playTrack(prev, { queue, queueIndex: currentIndex - 1 });
+      await playTrack(prev, {
+        queue,
+        queueIndex: currentIndex - 1,
+        continuePlaybackSource: true,
+      });
     } catch (e) {
       console.error("prevTrack failed", e);
     }
@@ -488,11 +606,15 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
       queue,
       currentIndex,
       playTrack,
+      replaceQueuePreservingPlayback,
+      getPlaybackSource,
       nextTrack,
       prevTrack,
       pause,
       seekTo,
       togglePlayback,
+      suppressNextClicks,
+      isActivationClickSuppressed,
     }),
     [
       currentTrack,
@@ -503,11 +625,15 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
       queue,
       currentIndex,
       playTrack,
+      replaceQueuePreservingPlayback,
+      getPlaybackSource,
       nextTrack,
       prevTrack,
       pause,
       seekTo,
       togglePlayback,
+      suppressNextClicks,
+      isActivationClickSuppressed,
     ],
   );
 

@@ -254,3 +254,40 @@ Tracks that appear in public playlists can accumulate **multiple advantages**:
 
 - **Accepted for MVP** — simple wiring, weak explicit score weight, bounded curated cap.
 - **Requires monitoring** as traffic and playlist volume grow (metrics on overlap: pool ∩ curated ∩ high `playlist_count`).
+
+---
+
+## 10. Playlist mutation responses are not enriched
+
+### Current state
+
+- **`GET /playlists/{id}`** → **enriched** playlist payload: playlist metadata plus per-track **`title`**, **`artist_name`**, **`cover_url`**, **`audio_url`**, and top-level **`cover_urls`** (first four positions; entries may be `null`).
+- **`POST /playlists`** and **mutations** (`POST /playlists/{id}/tracks`, `DELETE .../tracks/{song_id}`, `PUT .../reorder`) → **slim** response: same playlist metadata as before, but **`tracks`** entries are **`song_id`** and **`position`** only (no hydration).
+
+### Implication
+
+- The **frontend must refetch** **`GET /playlists/{id}`** (or equivalent) after a mutation when it needs enriched track rows (detail UI, collage, playback lists driven from hydrated fields).
+
+### Why acceptable in MVP
+
+- Avoids duplicating hydration on every write path and keeps mutation payloads small.
+- Single enrichment code path stays tied to **GET** detail (`playlist_to_detail_enriched` / shared discovery-style batch hydration — see **`/docs/state/backend.md`**).
+
+### Future improvement
+
+- **Unify** mutation responses with GET shape (always enriched), **or**
+- Add an **optional query flag** / variant (e.g. `?enriched=1`) on mutation responses for clients that want hydrated tracks without a second round-trip — trade payload size and server work vs UX.
+
+---
+
+### Add-to-playlist UX improvements
+
+**Current (frontend MVP)**
+
+- **Playlist modal** loads **`GET /playlists`** on open and adds via **`POST /playlists/{id}/tracks`** with single-select list (Tailwind-only UI).
+
+**Future**
+
+- **Recent playlist preselection** — remember last-used playlist(s) per user/session and highlight or default-select.
+- **Multi-select playlists** — add the same track to several playlists in one confirm step (batch or parallel calls with clear partial-failure UX).
+- **Search inside modal** — filter long playlist lists by title; optional sort (recently updated, A–Z).

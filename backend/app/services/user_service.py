@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.security import hash_password, validate_password_for_bcrypt
 from app.models.user import User
 from app.models.user_profile import UserProfile
+from app.services.like_service import get_or_create_liked_songs_playlist
 from app.services.rbac_service import assign_role_to_user
 
 # Dev/seed scripts only — not used for interactive accounts in production.
@@ -86,6 +87,8 @@ def create_user(
     if default_role_name is not None:
         rbac_role_name = map_product_role_to_rbac(default_role_name)
         assign_role_to_user(db, user_id=int(user.id), role_name=rbac_role_name)
+    # Private empty "Liked Songs" playlist — idempotent via like_service (aligned UX with GET /playlists ordering).
+    get_or_create_liked_songs_playlist(db, user_id=int(user.id))
     return user
 
 

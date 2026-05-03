@@ -1,9 +1,10 @@
 """
 Discovery ranking: candidate universe (Step 2a) + scoring (Step 2b).
 
-Scoring is CPU-only given preloaded maps (popularity, relevance, playlist counts, etc.).
-``build_candidate_set`` batches DB reads including playlist membership counts.
-``finalize_discovery_ranking`` may read playlists again when ``db`` is passed (curated rail).
+Scoring is CPU-only given preloaded maps (popularity, relevance, playlist counts,
+like counts, reorder signals, etc.). ``build_candidate_set`` batches DB reads including playlist
+membership counts, **14d** ``like_events`` counts, and per-user reorder aggregates. ``finalize_discovery_ranking`` may
+read playlists again when ``db`` is passed (curated rail).
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import logging
 import math
 import os
 import random
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 # Pipeline contract:
 # build_candidate_set -> score_candidates -> finalize_discovery_ranking -> compose_discovery_sections
@@ -24,6 +25,7 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.models.global_listening_aggregate import GlobalListeningAggregate
+from app.models.like_event import LikeEvent
 from app.models.listening_aggregate import ListeningAggregate
 from app.models.playlist import Playlist, PlaylistTrack
 from app.models.release import Release
@@ -41,6 +43,14 @@ from app.services.discovery_candidate_pools import (
     get_popular_candidates,
     get_user_candidates,
 )
+from app.services.reorder_signal_service import load_reorder_signal_by_song
+from app.services.signal_aggregator import (
+    LIKE_MATURITY_MINUTES,
+    LIKE_SIGNAL_WINDOW_DAYS,
+    PLAYLIST_POPULARITY_ALPHA as _PLAYLIST_POPULARITY_ALPHA,
+    REORDER_BOOST_ALPHA as _REORDER_BOOST_ALPHA,
+    compute_signal_contributions,
+)
 
 _MAX_CANDIDATES = 500
 logger = logging.getLogger(__name__)
@@ -54,8 +64,8 @@ _WEIGHT_AUTH_POP = 0.20
 _WEIGHT_ANON_DISC = 0.60
 _WEIGHT_ANON_POP = 0.40
 
-# Weak boost from playlist breadth: log1p(public playlist count per song). Not used in payouts.
-_PLAYLIST_POPULARITY_ALPHA = 0.05
+# Weak boosts: alphas live in ``signal_aggregator`` (single source of truth).
+# Re-exported as ``_PLAYLIST_POPULARITY_ALPHA`` / ``_REORDER_BOOST_ALPHA`` for tests and docstrings.
 
 # When all candidates share the same global duration in-window, min–max is undefined.
 _FLAT_POP_DISC = 0.5
@@ -179,6 +189,36 @@ def load_playlist_membership_counts(db: Session, candidate_ids: list[int]) -> di
     return {int(sid): int(n) for sid, n in rows}
 
 
+def load_like_signal_by_song(
+    db: Session,
+    song_ids: list[int],
+    *,
+    cutoff: datetime,
+    mature_upper: datetime,
+) -> dict[int, int]:
+    """
+    Per ``song_id``: count of ``like_events`` with ``created_at`` in ``[cutoff, mature_upper]``.
+
+    ``mature_upper`` is typically ``now - LIKE_MATURITY_MINUTES`` so very recent likes
+    (accidental taps / quick unlikes) are excluded while staying reactive.
+
+    One batched query (``GROUP BY song_id``). Songs absent from the result have count **0**.
+    """
+    if not song_ids:
+        return {}
+    rows = (
+        db.query(LikeEvent.song_id, func.count(LikeEvent.id))
+        .filter(
+            LikeEvent.song_id.in_(song_ids),
+            LikeEvent.created_at >= cutoff,
+            LikeEvent.created_at <= mature_upper,
+        )
+        .group_by(LikeEvent.song_id)
+        .all()
+    )
+    return {int(sid): int(n) for sid, n in rows}
+
+
 def load_user_listened_artists(db: Session, user_id: int | None) -> set[int]:
     """
     Return artist ids listened by user from ListeningAggregate (>0 duration), else empty.
@@ -289,6 +329,16 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
     artist_by_song, days_since_release = load_song_metadata(db, candidate_ids)
     user_listened_artists = load_user_listened_artists(db, user_id)
     playlist_count_by_song = load_playlist_membership_counts(db, candidate_ids)
+    reorder_signal_by_song = load_reorder_signal_by_song(db, user_id, candidate_ids)
+    now_utc = datetime.utcnow()
+    like_cutoff = now_utc - timedelta(days=int(LIKE_SIGNAL_WINDOW_DAYS))
+    like_mature_upper = now_utc - timedelta(minutes=int(LIKE_MATURITY_MINUTES))
+    like_count_by_song = load_like_signal_by_song(
+        db,
+        candidate_ids,
+        cutoff=like_cutoff,
+        mature_upper=like_mature_upper,
+    )
 
     return {
         "candidate_ids": candidate_ids,
@@ -300,6 +350,8 @@ def build_candidate_set(db: Session, user_id: int | None) -> dict:
         "user_listened_artists": user_listened_artists,
         "candidate_pool_by_song": candidate_pool_by_song,
         "playlist_count_by_song": playlist_count_by_song,
+        "reorder_signal_by_song": reorder_signal_by_song,
+        "like_count_by_song": like_count_by_song,
     }
 
 
@@ -313,15 +365,23 @@ def score_candidates(
     user_id: int | None,
     *,
     playlist_count_by_song: dict[int, int] | None = None,
+    reorder_signal_by_song: dict[int, float] | None = None,
+    like_count_by_song: dict[int, int] | None = None,
 ) -> list[dict]:
     """
     Compute discovery score features per candidate (deterministic given inputs).
 
-    Main ``score`` and ``for_you_score`` each gain the same small additive term
-    ``+ _PLAYLIST_POPULARITY_ALPHA * log1p(playlist_count)`` (``playlist_count`` =
-    public, non-deleted playlists containing the song; see ``load_playlist_membership_counts``).
+    Main ``score`` and ``for_you_score`` each gain the same small additive
+    ``signal_score`` from ``compute_signal_contributions`` in
+    ``signal_aggregator`` — **global** playlist: ``_PLAYLIST_POPULARITY_ALPHA * log1p(count)``
+    (``load_playlist_membership_counts``); **user** reorder:
+    ``_REORDER_BOOST_ALPHA * reorder_signal`` where ``reorder_signal`` is from
+    ``load_reorder_signal_by_song`` (already ``log1p`` + cap in the loader).
+    **Global likes:** ``like_count_by_song`` from ``load_like_signal_by_song`` (14d window);
+    ``log1p(min(count, LIKE_CAP)) * LIKE_BOOST_ALPHA`` in ``signal_aggregator`` (single ``log1p``).
+    ``total.signal_score`` = ``user_signal_score`` + ``global_signal_score``.
+    Missing ids imply zero for each map.
     Boosting ``for_you_score`` keeps finalize ordering aligned with the composite ``score``.
-    Omitted or missing ids imply count 0.
 
     Output order matches ``candidate_ids`` and includes section-specific scores:
     ``play_now_score``, ``for_you_score``, ``explore_score`` plus shared metadata
@@ -332,6 +392,8 @@ def score_candidates(
         return []
 
     counts = playlist_count_by_song or {}
+    reorder_by_song = reorder_signal_by_song or {}
+    likes = like_count_by_song or {}
 
     # Anti-viral normalization: always use log(1 + popularity) wherever popularity is scored.
     pops_raw = [float(popularity.get(int(sid), 0.0)) for sid in candidate_ids]
@@ -403,16 +465,30 @@ def score_candidates(
             min(1.0, 0.4 + (0.6 * quality_score)),
         )
         playlist_count = int(counts.get(song_id, 0))
-        playlist_signal = math.log1p(playlist_count)
-        playlist_boost = _PLAYLIST_POPULARITY_ALPHA * playlist_signal
-        score = float(base_score) * float(quality_penalty) + playlist_boost
+        reorder_signal = float(reorder_by_song.get(song_id, 0.0))
+        like_count = int(likes.get(song_id, 0))
+        signals = compute_signal_contributions(
+            playlist_count=playlist_count,
+            reorder_signal=reorder_signal,
+            like_count=like_count,
+        )
+        signal_score = float(signals["total"]["signal_score"])
+        user_signal_score = float(signals["total"]["user_signal_score"])
+        global_signal_score = float(signals["total"]["global_signal_score"])
+        playlist_signal = float(signals["global"]["playlist"]["signal"])
+        playlist_boost = float(signals["global"]["playlist"]["boost"])
+        reorder_signal = float(signals["user"]["reorder"]["signal"])
+        reorder_boost = float(signals["user"]["reorder"]["boost"])
+        like_signal = float(signals["global"]["likes"]["signal"])
+        like_boost = float(signals["global"]["likes"]["boost"])
+        score = float(base_score) * float(quality_penalty) + signal_score
 
         out.append(
             {
                 "song_id": song_id,
                 "score": float(score),
                 "play_now_score": float(play_now_score),
-                "for_you_score": float(for_you_score) + playlist_boost,
+                "for_you_score": float(for_you_score) + signal_score,
                 "explore_score": float(explore_score),
                 "explore_excluded": bool(explore_excluded),
                 "score_base": float(base_score),
@@ -429,6 +505,16 @@ def score_candidates(
                 "days_since_release": int(days),
                 "playlist_count": int(playlist_count),
                 "playlist_signal": float(playlist_signal),
+                "playlist_boost": float(playlist_boost),
+                "like_count": int(like_count),
+                "like_signal": float(like_signal),
+                "like_boost": float(like_boost),
+                "reorder_signal": float(reorder_signal),
+                "reorder_boost": float(reorder_boost),
+                "user_signal_score": float(user_signal_score),
+                "global_signal_score": float(global_signal_score),
+                "signal_score": float(signal_score),
+                "signals": signals,
             }
         )
 
